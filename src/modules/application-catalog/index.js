@@ -21,9 +21,9 @@ router.get('/profile', (req, res) => {
     res.status(200).send();
 });
 
-router.get('/select', (req, res) => {
+router.get('/select', async (req, res) => {
     if (req.query.id) {
-        core.setCurrentService(req.query.id);
+        await core.setCurrentService(req.query.id);
         core.setDisplayGui(core.GUI.bootstrap_app);
         res.status(200).send();
         return;

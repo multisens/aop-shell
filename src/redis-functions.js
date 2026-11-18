@@ -46,10 +46,14 @@ function originsClear() {
     return fcall('tv30_origins_clear', []);
 }
 
-// services:announced rewritten whole with these ids; an empty list deletes
-// it.
-function announcedServices(ids) {
-    return fcall('tv30_announced_services', ids);
+// services:announced rewritten whole with the records of catalog, a Map
+// globalServiceId -> record; an empty catalog deletes it.
+function announcedServices(catalog) {
+    const args = [];
+    for (const [gsid, record] of catalog) {
+        args.push(gsid, JSON.stringify(record));
+    }
+    return fcall('tv30_announced_services', args);
 }
 
 // Refusal of data outside the schema (nothing written): repeating does not

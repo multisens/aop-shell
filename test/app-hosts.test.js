@@ -58,14 +58,19 @@ for (const [name, fn] of Object.entries({
                 return 1;
             }
             case 'tv30_profile_last_access': return indice().has(a[0]) ? 1 : 0;
-            // The list of announced services, written at the startup of the
-            // core.
-            case 'tv30_announced_services': store.set('services:announced', new Set(a)); return new Set(a).size;
+            // The Application Catalog, rewritten at each scan marker.
+            case 'tv30_announced_services': {
+                const catalogo = new Map();
+                for (let i = 0; i + 1 < a.length; i += 2) catalogo.set(a[i], a[i + 1]);
+                store.set('services:announced', catalogo);
+                return catalogo.size;
+            }
             default: throw new Error('ERR Function not found');
         }
     },
     async smembers(k) { return k === INDICE ? [...indice()] : []; },
     async hgetall(k) { return Object.fromEntries(hashOf(k)); },
+    async hget(k, f) { return hashOf(k).has(f) ? hashOf(k).get(f) : null; },
 })) {
     fakeRedis[name] = async (...args) => { if (down) throw new Error(FAIL); return fn(...args); };
 }
@@ -298,7 +303,7 @@ const BALD = { EntryPackage: [{
 }] };
 
 test('lancamento pela BALD: registra a origem PROPRIA da aplicacao (nao o alvo do proxy) e a camada grafica abre nela', async () => {
-    core.setCurrentService(SID);
+    await core.setCurrentService(SID);
     fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(BALD)));
     await bootstrap.fullscreen();
 
@@ -506,26 +511,32 @@ test('aplicacao fora do ar: host dela responde 502; sem aplicacao, /graphicsAppP
     } finally { await core.setDisplayGraphics(); }
 });
 
-test('LLS no core: a BAMT vai a unidade dona, que grava services:announced e publica aop/services retido; a SLT da o serviceId do SLS; o servico corrente sai dela', async () => {
+test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava services:announced e publica aop/services retido; o servico corrente vem do catalogo, com o serviceId do SLS', async () => {
     const servicos = () => published.filter(([t]) => t === 'aop/services');
-    // At startup, before any BAMT: the empty list.
+    // At startup, the stored catalog (empty).
+    await ate(() => servicos().length > 0);
     assert.deepEqual(servicos()[0], ['aop/services', '[]', true]);
     const BAM = { globalServiceId: SID, appVersion: 1, appName: 'Users', appIcon: '<svg/>', bannerIcon: '<svg/>', backgroundColor: '#000000', foregroundColor: '#ffffff' };
-    const SLT = { bsid: [10], bandwidth: 6, Service: [{ serviceId: SERVICE_ID, globalServiceId: SID }] };
+    const SLT = { bsid: [10], bandwidth: 6, Service: [{ serviceId: SERVICE_ID, globalServiceId: SID, serviceCategory: 30,
+        majorChannelNo: 10, minorChannelNo: 1, mainAvOverTheAir: true, receptionQuality: 80 }] };
+    const marco = rf => Buffer.from(JSON.stringify({ completedAt: '2026-01-01T00:00:00Z', rfChannels: rf }));
     fakeMqtt.emit('message', 'tlm/lls/10/slt', Buffer.from(JSON.stringify(SLT)));
     fakeMqtt.emit('message', 'tlm/lls/10/bamt', Buffer.from(JSON.stringify({ BAM: [BAM] })));
+    fakeMqtt.emit('message', 'tlm/scan', marco([10]));
     await ate(() => servicos().at(-1)[1] !== '[]');
     assert.deepEqual(servicos().at(-1), ['aop/services', JSON.stringify([{ serviceContextId: SID }]), true]);
-    assert.deepEqual([...store.get('services:announced')], [SID]);
-    core.setCurrentService(SID);
+    assert.deepEqual([...store.get('services:announced').keys()], [SID]);
+    assert.equal(JSON.parse(store.get('services:announced').get(SID)).bsid, 10);
+    await core.setCurrentService(SID);
     assert.equal(core.getCurrentService().bam.appName, 'Users');
     assert.equal(core.getCurrentService().serviceId, SERVICE_ID);
     assert.equal(subscribed.at(-1), `tlm/sls/${SERVICE_ID}/#`);
-    // BAMT removed (empty retained message).
+    // BAMT removed from a channel still detected: the service leaves the
+    // catalog.
     fakeMqtt.emit('message', 'tlm/lls/10/bamt', Buffer.from(''));
+    fakeMqtt.emit('message', 'tlm/scan', marco([10]));
     await ate(() => servicos().at(-1)[1] === '[]');
     assert.equal(store.get('services:announced').size, 0);
-    assert.equal(core.getCurrentService(), undefined);
     core.unsetCurrentService();
     assert.equal(unsubscribed.at(-1), `tlm/sls/${SERVICE_ID}/#`);
     fakeMqtt.emit('message', 'tlm/lls/10/slt', Buffer.from(''));

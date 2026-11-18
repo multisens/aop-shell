@@ -56,11 +56,10 @@ const fakeCore = {
     async refreshUserData() {},
 };
 const m = new Module(coreFile); m.filename = coreFile; m.loaded = true; m.exports = fakeCore; require.cache[coreFile] = m;
-// The unit that owns the list of services (the catalog reads from it),
-// without Redis.
-const llsFile = require.resolve('../src/modules/transport-layer-metadata-lls');
-const ml = new Module(llsFile); ml.filename = llsFile; ml.loaded = true; require.cache[llsFile] = ml;
-ml.exports = { services: async () => [...services].map(([serviceContextId, s]) => ({ serviceContextId, bam: s.bam })) };
+// The state of the catalog (services:announced), without Redis.
+const catalogFile = require.resolve('../src/modules/application-catalog/catalog');
+const mc = new Module(catalogFile); mc.filename = catalogFile; mc.loaded = true; require.cache[catalogFile] = mc;
+mc.exports = { items: async () => [...services].map(([gsid, s]) => ({ gsid, record: { bam: s.bam }, members: null })) };
 
 let server;
 let base = '';

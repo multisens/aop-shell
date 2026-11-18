@@ -6,6 +6,7 @@ const redisFunctions = require('./redis-functions');
 const { whenReady } = require('./redis-options');
 const profiles = require('./modules/profile-manager/service');
 const lls = require('./modules/transport-layer-metadata-lls');
+const catalog = require('./modules/application-catalog/catalog');
 const appHosts = require('./app-hosts');
 
 // Own origin of each application (./app-hosts.js), already validated.
@@ -52,10 +53,11 @@ const DATA = {
     videoStreamURL: '',
     currentUser: '',
     users: [],
-    // globalServiceId of the service in use, and its serviceId (the key of
-    // the SLS topics), from the SLT.
+    // globalServiceId of the service in use, and its entry in the
+    // Application Catalog: { serviceContextId, bam, serviceId }, serviceId
+    // being the key of the SLS topics.
     currentService: '',
-    currentServiceId: undefined,
+    currentEntry: undefined,
     serviceMetadata: {},
 };
 
@@ -64,6 +66,7 @@ const handlers = new Map([
     [TOPICS.current_user, loadCurrentUser],
     [TOPICS.current_service, loadCurrentService],
     [lls.TOPIC, lls.receive],
+    [catalog.SCAN_TOPIC, catalog.receiveScan],
 ]);
 
 const client = mqtt.connect(`mqtt://${process.env.MQTT_HOST}`, {
@@ -162,34 +165,39 @@ function getUserList() {
     return DATA.users;
 }
 
-// sid is the globalServiceId. The SLS topics are the ones of its serviceId;
-// a service no SLT lists has no SLS.
-function setCurrentService(sid) {
+// sid is the globalServiceId. The SLS topics are the ones of the serviceId
+// of its catalog entry; a service outside the catalog has no SLS. A Redis
+// failure rejects, with the service already published.
+async function setCurrentService(sid) {
     DATA.currentService = sid.toString();
+    DATA.currentEntry = undefined;
     client.publish(TOPICS.current_service, sid.toString(), { retain: true });
-    const announced = lls.service(DATA.currentService);
-    DATA.currentServiceId = announced ? announced.serviceId : undefined;
-    if (DATA.currentServiceId === undefined) {
-        logger.error(`[sls] no SLT lists ${DATA.currentService}: its SLS is not subscribed`);
+    const entry = await catalog.service(DATA.currentService);
+    if (DATA.currentService !== sid.toString()) {
         return;
     }
-    client.subscribe(slsFilter(DATA.currentServiceId), { noLocal: true });
+    DATA.currentEntry = entry;
+    if (!entry) {
+        logger.error(`[sls] ${DATA.currentService} is not in the Application Catalog: its SLS is not subscribed`);
+        return;
+    }
+    client.subscribe(slsFilter(entry.serviceId), { noLocal: true });
 }
 
 function unsetCurrentService() {
-    if (DATA.currentServiceId !== undefined) {
-        client.unsubscribe(slsFilter(DATA.currentServiceId), { noLocal: true });
+    if (DATA.currentEntry) {
+        client.unsubscribe(slsFilter(DATA.currentEntry.serviceId), { noLocal: true });
     }
     client.publish(TOPICS.current_service, '', { retain: true });
     DATA.currentService = '';
-    DATA.currentServiceId = undefined;
+    DATA.currentEntry = undefined;
     DATA.serviceMetadata = {};
 }
 
 // { serviceContextId, bam, serviceId } of the current service, from the
-// received LLS.
+// Application Catalog, or undefined.
 function getCurrentService() {
-    return lls.service(DATA.currentService);
+    return DATA.currentEntry;
 }
 
 function getServiceSLS() {
@@ -300,8 +308,21 @@ function loadCurrentUser(message) {
     });
 }
 
-function loadCurrentService(message) {
-    DATA.currentService = message.toString();
+// The retained service at boot: its catalog entry is read again.
+async function loadCurrentService(message) {
+    const sid = message.toString();
+    if (sid === DATA.currentService) {
+        return;
+    }
+    DATA.currentService = sid;
+    DATA.currentEntry = undefined;
+    if (!sid) {
+        return;
+    }
+    const entry = await catalog.service(sid);
+    if (DATA.currentService === sid) {
+        DATA.currentEntry = entry;
+    }
 }
 
 // Of the SLS fragments, only the BALD is read here; the others are left to
@@ -361,10 +382,13 @@ function onConnect() {
     loadUserData();
 }
 
+// A handler may return a promise: its failure goes to the log.
 function onMessage(topic, message) {
     for (const [filter, handler] of handlers) {
         if (mqttTopicMatch(topic, filter)) {
-            handler(message.toString(), topic);
+            Promise.resolve(handler(message.toString(), topic)).catch((err) => {
+                logger.error(`[mqtt] handler of ${topic} failed: ${err.message}`);
+            });
             return;
         }
     }
@@ -372,7 +396,7 @@ function onMessage(topic, message) {
 }
 
 whenReady(redis, `limpeza de ${ORIGINS_KEY}`, () => redisFunctions.originsClear());
-lls.start((topic, message) => client.publish(topic, message, { retain: true }));
+catalog.start((topic, message) => client.publish(topic, message, { retain: true }));
 client.on('connect', onConnect);
 client.on('message', onMessage);
 
