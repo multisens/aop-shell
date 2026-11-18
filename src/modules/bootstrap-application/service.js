@@ -94,9 +94,10 @@ function fullscreen() {
 }
 
 // Only HTML5 applications with AUTOSTART, or no controlCode, are started.
+// The BALD is { EntryPackage: [...] }.
 function startApp(bald) {
     const pending = [];
-    for (const entryPackage of bald) {
+    for (const entryPackage of bald.EntryPackage) {
         const autostart = !entryPackage.controlCode || entryPackage.controlCode === AUTOSTART;
         if (autostart && entryPackage.appType === HTML5_APP_TYPE) {
             pending.push(core.setDisplayGraphics(entryPackage.bcastEntryPackageUrl, entryPackage.bcastEntryPointUrl,

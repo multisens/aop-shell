@@ -20,6 +20,7 @@ const MQTT_CLIENT_ID = 'aop-core';
 const MQTT_CONNECT_TIMEOUT_MS = 4000;
 const USER_LOAD_ATTEMPTS = 5;
 const USER_LOAD_STEP_MS = 2000;
+const BALD_FRAGMENT = 'bald';
 
 const GUI = {
     app_catalogue: '/appcat',
@@ -51,7 +52,10 @@ const DATA = {
     videoStreamURL: '',
     currentUser: '',
     users: [],
+    // globalServiceId of the service in use, and its serviceId (the key of
+    // the SLS topics), from the SLT.
     currentService: '',
+    currentServiceId: undefined,
     serviceMetadata: {},
 };
 
@@ -158,20 +162,32 @@ function getUserList() {
     return DATA.users;
 }
 
+// sid is the globalServiceId. The SLS topics are the ones of its serviceId;
+// a service no SLT lists has no SLS.
 function setCurrentService(sid) {
     DATA.currentService = sid.toString();
     client.publish(TOPICS.current_service, sid.toString(), { retain: true });
-    client.subscribe(TOPICS.sls_metadata.replace('+', sid), { noLocal: true });
+    const announced = lls.service(DATA.currentService);
+    DATA.currentServiceId = announced ? announced.serviceId : undefined;
+    if (DATA.currentServiceId === undefined) {
+        logger.error(`[sls] no SLT lists ${DATA.currentService}: its SLS is not subscribed`);
+        return;
+    }
+    client.subscribe(slsFilter(DATA.currentServiceId), { noLocal: true });
 }
 
 function unsetCurrentService() {
-    client.unsubscribe(TOPICS.sls_metadata.replace('+', DATA.currentService), { noLocal: true });
+    if (DATA.currentServiceId !== undefined) {
+        client.unsubscribe(slsFilter(DATA.currentServiceId), { noLocal: true });
+    }
     client.publish(TOPICS.current_service, '', { retain: true });
     DATA.currentService = '';
+    DATA.currentServiceId = undefined;
     DATA.serviceMetadata = {};
 }
 
-// { serviceContextId, bam } of the current service, from the received LLS.
+// { serviceContextId, bam, serviceId } of the current service, from the
+// received LLS.
 function getCurrentService() {
     return lls.service(DATA.currentService);
 }
@@ -288,29 +304,36 @@ function loadCurrentService(message) {
     DATA.currentService = message.toString();
 }
 
+// Of the SLS fragments, only the BALD is read here; the others are left to
+// their consumers.
 function loadSLSMetadata(meta, topic) {
     const fragment = topic.split('/').at(-1);
-
-    if (!meta) {
-        DATA.serviceMetadata[fragment] = undefined;
-        if (fragment === 'bald') {
-            DATA.serviceMetadata.baldHandler = undefined;
-        }
+    if (fragment !== BALD_FRAGMENT) {
         return;
     }
 
-    const content = JSON.parse(meta);
-    if (fragment === 'esg') {
-        DATA.serviceMetadata.esg = content;
-        if (DATA.rxgui.current === GUI.bootstrap_app) {
-            setDisplayGui(GUI.bootstrap_app);
-        }
-    } else if (fragment === 'bald') {
-        DATA.serviceMetadata.bald = content;
-        if (DATA.serviceMetadata.baldHandler) {
-            DATA.serviceMetadata.baldHandler(content);
-        }
+    if (!meta) {
+        DATA.serviceMetadata.bald = undefined;
+        DATA.serviceMetadata.baldHandler = undefined;
+        return;
     }
+
+    let content;
+    try {
+        content = JSON.parse(meta);
+    } catch (err) {
+        logger.error(`[sls] BALD of ${topic} ignored: ${err.message}`);
+        return;
+    }
+    DATA.serviceMetadata.bald = content;
+    if (DATA.serviceMetadata.baldHandler) {
+        DATA.serviceMetadata.baldHandler(content);
+    }
+}
+
+// tlm/sls/<serviceId>/#.
+function slsFilter(serviceId) {
+    return TOPICS.sls_metadata.replace('+', String(serviceId));
 }
 
 function mqttTopicMatch(topic, filter) {

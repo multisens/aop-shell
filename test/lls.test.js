@@ -89,8 +89,12 @@ test('partida: antes de qualquer BAMT grava a lista vazia (tira a da partida ant
     assert.deepEqual(publicados, [['aop/services', '[]']]);
 });
 
+const bamt = (...bams) => JSON.stringify({ BAM: bams });
+const slt = (...pairs) => JSON.stringify({ bsid: [1], bandwidth: 6,
+    Service: pairs.map(([serviceId, globalServiceId]) => ({ serviceId, globalServiceId })) });
+
 test('BAMT recebida: services:announced pela funcao, na ordem dos BAM, e o mesmo conteudo em aop/services', async () => {
-    await lls.receive(JSON.stringify([bam(A, 'Canal A'), bam(B, 'Canal B')]), 'tlm/lls/bs1/bamt');
+    await lls.receive(bamt(bam(A, 'Canal A'), bam(B, 'Canal B')), 'tlm/lls/bs1/bamt');
     assert.deepEqual(chamadas.at(-1), [A, B]);
     assert.deepEqual(ultimo(), ['aop/services', lista(A, B)]);
     assert.equal(lls.service(A).bam.appName, 'Canal A');
@@ -99,16 +103,32 @@ test('BAMT recebida: services:announced pela funcao, na ordem dos BAM, e o mesmo
 });
 
 test('BAMT de outro fluxo: servico repetido entra uma vez, com o BAM da recebida por ultimo', async () => {
-    await lls.receive(JSON.stringify([bam(B, 'Canal B novo'), bam(C, 'Canal C')]), 'tlm/lls/bs2/bamt');
+    await lls.receive(bamt(bam(B, 'Canal B novo'), bam(C, 'Canal C')), 'tlm/lls/bs2/bamt');
     assert.deepEqual(chamadas.at(-1), [A, B, C]);
     assert.deepEqual(ultimo(), ['aop/services', lista(A, B, C)]);
     assert.equal(lls.service(B).bam.appName, 'Canal B novo');
 });
 
-test('outras tabelas da LLS, topico fora de tlm/lls/<bsid>/bamt e BAMT que nao e JSON nao mudam a lista', async () => {
+test('SLT: da o serviceId de cada globalServiceId, da recebida por ultimo; sem SLT, serviceId indefinido; nao muda a lista', async () => {
     const n = chamadas.length, p = publicados.length;
-    await lls.receive('{"x":1}', 'tlm/lls/bs1/slt');
-    await lls.receive(JSON.stringify([bam('urn:x', 'X')]), 'tlm/lls/bs1/extra/bamt');
+    assert.equal(lls.service(A).serviceId, undefined);
+    await lls.receive(slt([1001, A], [1002, B]), 'tlm/lls/bs1/slt');
+    await lls.receive(slt([2002, B]), 'tlm/lls/bs2/slt');
+    assert.equal(lls.service(A).serviceId, 1001);
+    assert.equal(lls.service(B).serviceId, 2002);
+    await lls.receive('', 'tlm/lls/bs2/slt');
+    assert.equal(lls.service(B).serviceId, 1002);
+    await lls.receive('nao e json', 'tlm/lls/bs1/slt');
+    assert.equal(lls.service(A).serviceId, undefined);
+    assert.ok(logs.some(l => l.includes('SLT of bs1 ignored')));
+    assert.equal(chamadas.length, n);
+    assert.equal(publicados.length, p);
+});
+
+test('outras tabelas da LLS, topico fora de tlm/lls/<bsid>/<tabela> e BAMT que nao e JSON nao mudam a lista', async () => {
+    const n = chamadas.length, p = publicados.length;
+    await lls.receive('{"x":1}', 'tlm/lls/bs1/tbsat');
+    await lls.receive(bamt(bam('urn:x', 'X')), 'tlm/lls/bs1/extra/bamt');
     await lls.receive('nao e json', 'tlm/lls/bs3/bamt');
     await lls.receive('', 'tlm/lls/bs-desconhecido/bamt');
     assert.equal(chamadas.length, n);
@@ -152,7 +172,7 @@ test('falha do Redis: tenta de novo e so publica depois de gravar', async () => 
     try {
         falhas = 1;
         const p = publicados.length;
-        await lls.receive(JSON.stringify([bam(A, 'Canal A')]), 'tlm/lls/bs1/bamt');
+        await lls.receive(bamt(bam(A, 'Canal A')), 'tlm/lls/bs1/bamt');
         assert.deepEqual(chamadas.at(-1), [B, C, A]);
         assert.equal(publicados.length, p, 'nada publicado sem o Redis gravado');
         assert.deepEqual([...anunciados], [B, C]);
@@ -169,7 +189,7 @@ test('recusa do esquema: nao repete nem publica', async () => {
     try {
         recusa = 'TV30SCHEMA tv30_announced_services: services:announced member "x": has 257 characters, maximum 256';
         const n = chamadas.length, p = publicados.length;
-        await lls.receive(JSON.stringify([bam('x'.repeat(257), 'Longo')]), 'tlm/lls/bs4/bamt');
+        await lls.receive(bamt(bam('x'.repeat(257), 'Longo')), 'tlm/lls/bs4/bamt');
         mock.timers.tick(20000);
         await settle();
         assert.equal(chamadas.length, n + 1);

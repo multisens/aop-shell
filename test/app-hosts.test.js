@@ -75,8 +75,11 @@ const origins = () => Object.fromEntries(hashOf('origins:associated'));
 const published = [];
 const fakeMqtt = new EventEmitter();
 fakeMqtt.publish = (t, m, o) => { published.push([t, String(m), !!(o && o.retain)]); };
-fakeMqtt.subscribe = () => undefined;
-fakeMqtt.unsubscribe = () => undefined;
+// [filter] of each subscribe and unsubscribe.
+const subscribed = [];
+const unsubscribed = [];
+fakeMqtt.subscribe = (filter) => { subscribed.push(filter); };
+fakeMqtt.unsubscribe = (filter) => { unsubscribed.push(filter); };
 const lastGraphics = () => {
     const g = published.filter(([t]) => t === 'aop/display/layers/graphics');
     return g.length ? g[g.length - 1][1] : undefined;
@@ -283,7 +286,8 @@ test('remocao do perfil corrente: aop/currentUser vazio (retido), aop/removedUse
 });
 
 const SID = 'urn:tv30:service:users-test';
-const BALD = [{
+const SERVICE_ID = 1001;
+const BALD = { EntryPackage: [{
     appContextId: 'urn:tv30:appcontext:ctx1',
     appId: 'urn:tv30:app:k1a2b3',
     appName: 'Trocar Usuario',
@@ -291,11 +295,11 @@ const BALD = [{
     bcastEntryPackageUrl: 'http://bcast:8081',
     bcastEntryPointUrl: '/users-test',
     controlCode: 'AUTOSTART',
-}];
+}] };
 
 test('lancamento pela BALD: registra a origem PROPRIA da aplicacao (nao o alvo do proxy) e a camada grafica abre nela', async () => {
     core.setCurrentService(SID);
-    fakeMqtt.emit('message', `tlm/sls/${SID}/bald`, Buffer.from(JSON.stringify(BALD)));
+    fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(BALD)));
     await bootstrap.fullscreen();
 
     const origin = 'http://urn-tv30-app-k1a2b3.apps.localhost:8080';
@@ -305,6 +309,22 @@ test('lancamento pela BALD: registra a origem PROPRIA da aplicacao (nao o alvo d
     assert.equal(core.getGraphicsAppByLabel('outra'), null);
     // Target of the redirection of /graphicsAppProxy.
     assert.equal(core.getGraphicsApp().origin, origin);
+});
+
+test('SLS do servico corrente: a MPD (XML) e os demais fragmentos nao sao lidos aqui; BALD que nao e JSON vai ao log, sem derrubar', () => {
+    const errors = [];
+    const realError = console.error;
+    console.error = (...a) => { errors.push(a.join(' ')); };
+    try {
+        assert.doesNotThrow(() => fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/mpd`, Buffer.from('<?xml version="1.0"?><MPD/>')));
+        assert.doesNotThrow(() => fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/stsid`, Buffer.from('{"RS":[]}')));
+        assert.doesNotThrow(() => fakeMqtt.emit('message', `tlm/sls/9/bald`, Buffer.from('<nao e json>')));
+    } finally { console.error = realError; }
+    assert.equal(core.getServiceSLS().mpd, undefined);
+    assert.equal(core.getServiceSLS().stsid, undefined);
+    assert.ok(errors.some(l => l.includes('BALD of tlm/sls/9/bald ignored')));
+    // The BALD received before stays.
+    assert.deepEqual(core.getServiceSLS().bald, BALD);
 });
 
 test('troca de aplicacao: remove a origem anterior e registra a nova; relancar a mesma nao a remove', async () => {
@@ -486,21 +506,27 @@ test('aplicacao fora do ar: host dela responde 502; sem aplicacao, /graphicsAppP
     } finally { await core.setDisplayGraphics(); }
 });
 
-test('LLS no core: a BAMT vai a unidade dona, que grava services:announced e publica aop/services retido; o servico corrente sai dela', async () => {
+test('LLS no core: a BAMT vai a unidade dona, que grava services:announced e publica aop/services retido; a SLT da o serviceId do SLS; o servico corrente sai dela', async () => {
     const servicos = () => published.filter(([t]) => t === 'aop/services');
     // At startup, before any BAMT: the empty list.
     assert.deepEqual(servicos()[0], ['aop/services', '[]', true]);
     const BAM = { globalServiceId: SID, appVersion: 1, appName: 'Users', appIcon: '<svg/>', bannerIcon: '<svg/>', backgroundColor: '#000000', foregroundColor: '#ffffff' };
-    fakeMqtt.emit('message', 'tlm/lls/bs-teste/bamt', Buffer.from(JSON.stringify([BAM])));
+    const SLT = { bsid: [10], bandwidth: 6, Service: [{ serviceId: SERVICE_ID, globalServiceId: SID }] };
+    fakeMqtt.emit('message', 'tlm/lls/10/slt', Buffer.from(JSON.stringify(SLT)));
+    fakeMqtt.emit('message', 'tlm/lls/10/bamt', Buffer.from(JSON.stringify({ BAM: [BAM] })));
     await ate(() => servicos().at(-1)[1] !== '[]');
     assert.deepEqual(servicos().at(-1), ['aop/services', JSON.stringify([{ serviceContextId: SID }]), true]);
     assert.deepEqual([...store.get('services:announced')], [SID]);
     core.setCurrentService(SID);
     assert.equal(core.getCurrentService().bam.appName, 'Users');
+    assert.equal(core.getCurrentService().serviceId, SERVICE_ID);
+    assert.equal(subscribed.at(-1), `tlm/sls/${SERVICE_ID}/#`);
     // BAMT removed (empty retained message).
-    fakeMqtt.emit('message', 'tlm/lls/bs-teste/bamt', Buffer.from(''));
+    fakeMqtt.emit('message', 'tlm/lls/10/bamt', Buffer.from(''));
     await ate(() => servicos().at(-1)[1] === '[]');
     assert.equal(store.get('services:announced').size, 0);
     assert.equal(core.getCurrentService(), undefined);
     core.unsetCurrentService();
+    assert.equal(unsubscribed.at(-1), `tlm/sls/${SERVICE_ID}/#`);
+    fakeMqtt.emit('message', 'tlm/lls/10/slt', Buffer.from(''));
 });
