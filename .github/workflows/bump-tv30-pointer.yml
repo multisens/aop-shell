@@ -1,4 +1,4 @@
-name: Build, push e bump submodule aop em TV30
+name: Build, push e bump submodule aop-shell em TV30
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
       - name: Checkout AOP (self)
         uses: actions/checkout@v4
         with:
-          path: aop
+          path: aop-shell
 
       - name: Checkout Infra (Dockerfile + contextos extras)
         uses: actions/checkout@v4
@@ -28,18 +28,18 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build e push tv30-aop
+      - name: Build e push tv30-aop-shell
         uses: docker/build-push-action@v5
         with:
-          context: ./aop
-          file: ./infra/dockerfiles/aop.Dockerfile
+          context: ./aop-shell
+          file: ./infra/dockerfiles/aop-shell.Dockerfile
           build-contexts: |
             tv30-data=./infra/user-files-template
             tv30-scripts=./infra/dockerfiles
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/tv30-aop:${{ github.sha }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/tv30-aop:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/tv30-aop-shell:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/tv30-aop-shell:latest
 
   bump:
     needs: build-image
@@ -53,7 +53,7 @@ jobs:
           submodules: false
           fetch-depth: 0
 
-      - name: Atualizar ponteiro do submodule aop
+      - name: Atualizar ponteiro do submodule aop-shell
         env:
           AOP_SHA: ${{ github.sha }}
         run: |
@@ -61,16 +61,16 @@ jobs:
           git config user.name  "Luis Claudio Ribeiro Junior"
           git config user.email "luis.claudio.r.jr@gmail.com"
 
-          CURRENT=$(git ls-tree HEAD aop | awk '{print $3}')
+          CURRENT=$(git ls-tree HEAD aop-shell | awk '{print $3}')
           if [ "$CURRENT" = "$AOP_SHA" ]; then
             echo "Ponteiro ja em $AOP_SHA — sem mudancas"
             exit 0
           fi
 
-          echo "Atualizando ponteiro do submodule aop: $CURRENT -> $AOP_SHA"
-          git update-index --cacheinfo 160000 "$AOP_SHA" aop
+          echo "Atualizando ponteiro do submodule aop-shell: $CURRENT -> $AOP_SHA"
+          git update-index --cacheinfo 160000 "$AOP_SHA" aop-shell
 
-          git commit -m "chore: bump submodule aop pra ${AOP_SHA:0:7}"
+          git commit -m "chore: bump submodule aop-shell pra ${AOP_SHA:0:7}"
 
           for i in 1 2 3; do
             if git push origin main; then exit 0; fi

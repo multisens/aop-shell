@@ -166,12 +166,12 @@ after(async () => { for (const c of closers.reverse()) await c(); });
 
 // --- configuration -----------------------------------------------------------
 test('mqttWsConfig: alvo ws://MQTT_HOST:MQTT_WS_PORT, padrao 9001; valor invalido lanca erro', () => {
-    assert.deepEqual({ ...mqttWs.mqttWsConfig({ MQTT_HOST: 'mosquitto' }) }, { host: 'mosquitto', port: 9001, target: 'ws://mosquitto:9001' });
-    assert.equal(mqttWs.mqttWsConfig({ MQTT_HOST: 'mosquitto', MQTT_WS_PORT: '' }).port, 9001);
+    assert.deepEqual({ ...mqttWs.mqttWsConfig({ MQTT_HOST: 'mqtt-broker' }) }, { host: 'mqtt-broker', port: 9001, target: 'ws://mqtt-broker:9001' });
+    assert.equal(mqttWs.mqttWsConfig({ MQTT_HOST: 'mqtt-broker', MQTT_WS_PORT: '' }).port, 9001);
     assert.equal(mqttWs.mqttWsConfig({ MQTT_HOST: '127.0.0.1', MQTT_WS_PORT: ' 49153 ' }).target, 'ws://127.0.0.1:49153');
     assert.equal(mqttWs.mqttWsConfig({ MQTT_HOST: '[::1]', MQTT_WS_PORT: '80' }).target, 'ws://[::1]:80');
     for (const p of ['0', '65536', 'abc', '9001x', '-1', '90.1']) {
-        assert.throws(() => mqttWs.mqttWsConfig({ MQTT_HOST: 'mosquitto', MQTT_WS_PORT: p }), /MQTT_WS_PORT invalida/, p);
+        assert.throws(() => mqttWs.mqttWsConfig({ MQTT_HOST: 'mqtt-broker', MQTT_WS_PORT: p }), /MQTT_WS_PORT invalida/, p);
     }
     for (const h of ['', '127.0.0.1:1883', 'broker/mqtt', 'eu@broker', '::1', 'a b']) {
         assert.throws(() => mqttWs.mqttWsConfig({ MQTT_HOST: h }), /MQTT_HOST invalido/, h);
