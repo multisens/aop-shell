@@ -2,17 +2,17 @@ const core = require('../../core');
 const ejs = require('ejs');
 const express = require('express');
 const path = require('path');
-const router = express.Router();
 const service = require('./service');
 
-// falha do Redis -> 404 {error:200}
+const router = express.Router();
+
+// A Redis failure gives 404 {error:200}.
 router.get('/', async (req, res) => {
-    const html = await ejs.renderFile(path.join(__dirname, 'view.ejs'),
-        {
-            cards: await service.cards(),
-            profile: service.profile(),
-            basepath: core.GUI.app_catalogue
-        });
+    const html = await ejs.renderFile(path.join(__dirname, 'view.ejs'), {
+        cards: await service.cards(),
+        profile: service.profile(),
+        basepath: core.GUI.app_catalogue,
+    });
     res.send(html);
 });
 

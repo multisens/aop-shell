@@ -17,8 +17,8 @@ function profileWrite(id, services, fields) {
 // Returns the profile limit of a refusal by the limit; for another
 // failure, null.
 function profileLimitOf(err) {
-    const m = PROFILE_LIMIT_REFUSAL.exec((err && err.message) || '');
-    return m ? Number(m[1]) : null;
+    const match = PROFILE_LIMIT_REFUSAL.exec((err && err.message) || '');
+    return match ? Number(match[1]) : null;
 }
 
 // lastAccess only of a profile in users:index (no stray hash); true if
@@ -64,9 +64,17 @@ function fcall(name, args) {
 }
 
 function fieldPairs(fields) {
-    return Object.keys(fields).sort().flatMap(k => [k, String(fields[k])]);
+    return Object.keys(fields).sort().flatMap((key) => [key, String(fields[key])]);
 }
 
 module.exports = {
-    profileWrite, profileLimitOf, profileLastAccess, profileRemove, originRegister, originRemove, originsClear, announcedServices, isSchemaRefusal,
+    profileWrite,
+    profileLimitOf,
+    profileLastAccess,
+    profileRemove,
+    originRegister,
+    originRemove,
+    originsClear,
+    announcedServices,
+    isSchemaRefusal,
 };
