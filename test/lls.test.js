@@ -113,7 +113,7 @@ test('outras tabelas da LLS, topico fora de tlm/lls/<bsid>/bamt e BAMT que nao e
     await lls.receive('', 'tlm/lls/bs-desconhecido/bamt');
     assert.equal(chamadas.length, n);
     assert.equal(publicados.length, p);
-    assert.ok(logs.some(l => l.includes('BAMT de bs3 ignorada')));
+    assert.ok(logs.some(l => l.includes('BAMT of bs3 ignored')));
 });
 
 test('BAMT retirada (mensagem vazia): os servicos so daquele fluxo saem', async () => {
@@ -160,7 +160,7 @@ test('falha do Redis: tenta de novo e so publica depois de gravar', async () => 
         await settle();
         assert.deepEqual([...anunciados], [B, C, A]);
         assert.deepEqual(ultimo(), ['aop/services', lista(B, C, A)]);
-        assert.ok(logs.some(l => l.includes('gravado depois de 1 falha(s)')));
+        assert.ok(logs.some(l => l.includes('written after 1 failure(s)')));
     } finally { mock.timers.reset(); }
 });
 

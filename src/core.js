@@ -1,6 +1,6 @@
 require('dotenv').config();
-const fs = require('fs');
 const mqtt = require('mqtt');
+const logger = require('./logger');
 const redis = require('./redis-client');
 const redisFunctions = require('./redis-functions');
 const { whenReady } = require('./redis-options');
@@ -15,29 +15,35 @@ const APPS = appHosts.appsConfig();
 // browser sends in the Origin of its calls, not the proxy target) to the
 // current globalServiceId. Cleared at boot.
 const ORIGINS_KEY = 'origins:associated';
-whenReady(redis, `limpeza de ${ORIGINS_KEY}`, () => redisFunctions.originsClear());
 
-function registerAssociatedOrigin(origin) {
-    const scid = DATA.currentService;
-    if (!scid) return Promise.reject(new Error(`sem servico corrente: a origem ${origin} nao foi registrada como associada`));
-    return redisFunctions.originRegister(origin, scid).then(() => origin);
-}
+const MQTT_CLIENT_ID = 'aop-core';
+const MQTT_CONNECT_TIMEOUT_MS = 4000;
+const USER_LOAD_ATTEMPTS = 5;
+const USER_LOAD_STEP_MS = 2000;
 
-function unregisterAssociatedOrigin(origin) {
-    return redisFunctions.originRemove(origin).then(() => undefined);
-}
+const GUI = {
+    app_catalogue: '/appcat',
+    profile_chooser: '/prfchs',
+    profile_creator: '/profile/create',
+    bootstrap_app: '/btpapp',
+};
 
-const client = mqtt.connect(`mqtt://${process.env.MQTT_HOST}`, {
-    clientId : 'aop-core',
-    clean : true,
-    connectTimeout : 4000,
-});
-lls.start((topic, message) => client.publish(topic, message, { retain : true }));
+const TOPICS = {
+    current_user: 'aop/currentUser',
+    removed_user: 'aop/removedUser',
+    current_service: 'aop/currentService',
+    sls_metadata: 'tlm/sls/+/#',
+    gui_layer: 'aop/display/layers/rxgui',
+    pmplayer_url: 'aop/display/layers/video/url',
+    pmplayer_size: 'aop/display/layers/video/size',
+    graphics_layer: 'aop/display/layers/graphics',
+    application_state: 'aop/application-lifecycle-manager/application-state',
+};
 
 const DATA = {
     rxgui: {
         current: '',
-        previous: ''
+        previous: '',
     },
     // Application in the graphics layer: { appId, label, origin, target } or
     // null.
@@ -46,78 +52,24 @@ const DATA = {
     currentUser: '',
     users: [],
     currentService: '',
-    serviceMetadata: {}
+    serviceMetadata: {},
 };
 
-const GUI = {
-    app_catalogue: '/appcat',
-    profile_chooser: '/prfchs',
-    profile_creator: '/profile/create',
-    bootstrap_app: '/btpapp'
-};
-
-const _t = {
-    current_user: 'aop/currentUser',
-    removed_user: 'aop/removedUser',
-    current_service: 'aop/currentService',
-    sls_metadata: 'tlm/sls/+/#',
-    gui_layer: 'aop/display/layers/rxgui',
-    pmplayer_url : 'aop/display/layers/video/url',
-    pmplayer_size : 'aop/display/layers/video/size',
-    graphics_layer: 'aop/display/layers/graphics',
-    application_state: 'aop/application-lifecycle-manager/application-state'
-};
-
-const _topics = new Map([
-    [_t.current_user, loadCurrentUser],
-    [_t.current_service, loadCurrentService],
-    [lls.TOPIC, lls.receive]
+// Handler of each subscribed topic filter.
+const handlers = new Map([
+    [TOPICS.current_user, loadCurrentUser],
+    [TOPICS.current_service, loadCurrentService],
+    [lls.TOPIC, lls.receive],
 ]);
 
-client.on('connect', () => {
-    console.log('Connected to MQTT broker');
-    _topics.forEach((_, key) => {
-        client.subscribe(key, { noLocal : true });
-    });
-
-    // Additional topics to handle, but no subscribe yet
-    _topics.set(_t.sls_metadata, loadSLSMetadata);
-
-    loadUserData();
-});
-
-function mqttTopicMatch(topic, filter) {
-    let filterregex = filter.split('/').map(level => {
-        if (level === '+') {
-            return '[^/#+]+';
-        } else if (level === '#') {
-            return '.*';
-        } else {
-            return level.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        }
-    }).join('/');
-
-    let regex = new RegExp(`^${filterregex}$`);
-    return regex.test(topic);
-}
-
-client.on('message', (topic, message) => {
-    let found = false;
-    _topics.forEach((handler, filter) => {
-        if (mqttTopicMatch(topic, filter)) {
-            handler(message.toString(), topic);
-            found = true;
-            return;
-        }
-    });
-
-    if (!found) {
-        console.log(`no handler for topic ${topic}`);
-    }
+const client = mqtt.connect(`mqtt://${process.env.MQTT_HOST}`, {
+    clientId: MQTT_CLIENT_ID,
+    clean: true,
+    connectTimeout: MQTT_CONNECT_TIMEOUT_MS,
 });
 
 function setDisplayGui(screen) {
-    client.publish(_t.gui_layer, screen);
+    client.publish(TOPICS.gui_layer, screen);
     DATA.rxgui.previous = DATA.rxgui.current;
     DATA.rxgui.current = screen;
 }
@@ -130,106 +82,44 @@ function setDisplayGraphics(baseUrl = '', epUrl = '', appId = '') {
     let next = null;
     if (baseUrl !== '') {
         next = appHosts.describeApp(appId || DATA.currentService, baseUrl, APPS);
-        if (!next) console.error(`[apps] bcastEntryPackageUrl invalido, aplicacao nao aberta: '${baseUrl}'`);
+        if (!next) {
+            logger.error(`[apps] invalid bcastEntryPackageUrl, application not opened: '${baseUrl}'`);
+        }
     }
 
     const pending = [];
-    const prev = DATA.graphicsApp;
-    if (prev && (!next || prev.origin !== next.origin)) {
-        pending.push(unregisterAssociatedOrigin(prev.origin));
+    const previous = DATA.graphicsApp;
+    if (previous && (!next || previous.origin !== next.origin)) {
+        pending.push(unregisterAssociatedOrigin(previous.origin));
     }
     if (next) {
         pending.push(registerAssociatedOrigin(next.origin));
     }
 
     // The application that leaves ends before the one that enters starts.
-    if (prev) {
-        publishApplicationState(prev, 'ended');
+    if (previous) {
+        publishApplicationState(previous, 'ended');
     }
     DATA.graphicsApp = next ? { ...next, serviceContextId: DATA.currentService } : null;
     if (DATA.graphicsApp && DATA.graphicsApp.serviceContextId) {
         publishApplicationState(DATA.graphicsApp, 'started');
     }
-    client.publish(_t.graphics_layer, next ? appHosts.entryUrl(next.origin, epUrl) : '');
+    client.publish(TOPICS.graphics_layer, next ? appHosts.entryUrl(next.origin, epUrl) : '');
     return Promise.all(pending).then(() => undefined);
-}
-
-// Change of state of the application, for the other components; published
-// here until the Application Lifecycle Manager exists.
-function publishApplicationState(app, state) {
-    const message = { serviceContextId: app.serviceContextId, appId: app.appId, origin: app.origin, state };
-    client.publish(_t.application_state, JSON.stringify(message));
 }
 
 function setVideoURL(url = '') {
     if (url.endsWith('m3u8') || url.endsWith('mpd')) {
-        let file = url.split('/').pop();
+        const file = url.split('/').pop();
         DATA.videoStreamURL = url.replace(`/${file}`, '');
-        client.publish(_t.pmplayer_url, `/videoStreamProxy/${file}`);
-    }
-    else {
-        client.publish(_t.pmplayer_url, url);
+        client.publish(TOPICS.pmplayer_url, `/videoStreamProxy/${file}`);
+    } else {
+        client.publish(TOPICS.pmplayer_url, url);
     }
 }
 
 function setVideoSize(top = '0', left = '0', width = '100%', height = '100%') {
-    client.publish(_t.pmplayer_size, JSON.stringify({
-        top: top,
-        left: left,
-        width: width,
-        height: height
-    }));
-}
-
-// Profiles read directly from storage, all of them, without the visibility
-// filter. A base without profiles gets the default profile. A Redis failure
-// rejects.
-async function refreshUserData() {
-    let ids = await redis.smembers('users:index');
-    if (ids.length === 0) {
-        await profiles.ensureDefaultProfile();
-        ids = await redis.smembers('users:index');
-    }
-
-    const details = await Promise.all(ids.map(async id => {
-        const d = await redis.hgetall(`user:${id}`);
-        return { id, name: d.nickname || d.name || id, avatar: d.avatar || null };
-    }));
-
-    DATA.users.length = 0;
-    details.forEach(u => DATA.users.push(u));
-    console.log(`Loaded ${DATA.users.length} users from Redis`);
-}
-
-// Boot and MQTT path: retries and logs. Without a current profile, the
-// first one; after that, only the choice in the chooser sets it.
-async function loadUserData(attempt = 1) {
-    try {
-        await refreshUserData();
-        if (DATA.users.length > 0 && !DATA.currentUser) {
-            await setCurrentUser(DATA.users[0].id);
-        }
-    } catch (err) {
-        // Redis may be slow to start: retry, at most 5 times, with backoff.
-        if (attempt < 5) {
-            const delay = attempt * 2000;
-            console.log(`Falha carregando users do Redis (tentativa ${attempt}/${5}, retry em ${delay}ms): ${err.message}`);
-            setTimeout(() => loadUserData(attempt + 1), delay);
-        } else {
-            console.error(`Desistindo de carregar users do Redis apos ${attempt} tentativas: ${err.message}`);
-        }
-    }
-}
-
-// Writes lastAccess on every change of the current user, including one that
-// arrives on aop/currentUser. The echo of its own publication is ignored;
-// the retained message received at boot counts as an access.
-function loadCurrentUser(message) {
-    const uid = message.toString();
-    if (uid === DATA.currentUser) return;
-    DATA.currentUser = uid;
-    profiles.touchLastAccess(uid)
-        .catch(err => console.error(`[profiles] falha gravando lastAccess de ${uid}: ${err.message}`));
+    client.publish(TOPICS.pmplayer_size, JSON.stringify({ top, left, width, height }));
 }
 
 // Writes lastAccess first: if storage fails, the change does not happen and
@@ -237,7 +127,7 @@ function loadCurrentUser(message) {
 async function setCurrentUser(uid) {
     await profiles.touchLastAccess(uid.toString());
     DATA.currentUser = uid.toString();
-    client.publish(_t.current_user, uid.toString(), { retain : true });
+    client.publish(TOPICS.current_user, uid.toString(), { retain: true });
 }
 
 function getCurrentUser() {
@@ -248,43 +138,35 @@ function getCurrentUser() {
 // aop/currentUser empty until the choice in the chooser; the removal goes to
 // aop/removedUser, and the platform goes back to the profile chooser.
 function profileRemoved(uid) {
-    const i = DATA.users.findIndex(u => u.id === uid);
-    if (i >= 0) DATA.users.splice(i, 1);
+    const index = DATA.users.findIndex((user) => user.id === uid);
+    if (index >= 0) {
+        DATA.users.splice(index, 1);
+    }
     if (uid === DATA.currentUser) {
         DATA.currentUser = '';
-        client.publish(_t.current_user, '', { retain : true });
+        client.publish(TOPICS.current_user, '', { retain: true });
     }
-    client.publish(_t.removed_user, uid);
+    client.publish(TOPICS.removed_user, uid);
     setDisplayGui(GUI.profile_chooser);
 }
 
 function getUserData(uid) {
-    let result = {};
-    DATA.users.forEach(usr => {
-        if (usr.id == uid) {
-            result = usr;
-        }
-    });
-    return result;
+    return DATA.users.find((user) => user.id === String(uid)) || {};
 }
 
 function getUserList() {
     return DATA.users;
 }
 
-function loadCurrentService(message) {
-    DATA.currentService = message.toString();
-}
-
 function setCurrentService(sid) {
     DATA.currentService = sid.toString();
-    client.publish(_t.current_service, sid.toString(), { retain : true });
-    client.subscribe(_t.sls_metadata.replace('+', sid), { noLocal : true });
+    client.publish(TOPICS.current_service, sid.toString(), { retain: true });
+    client.subscribe(TOPICS.sls_metadata.replace('+', sid), { noLocal: true });
 }
 
 function unsetCurrentService() {
-    client.unsubscribe(_t.sls_metadata.replace('+', DATA.currentService), { noLocal : true });
-    client.publish(_t.current_service, '', { retain : true });
+    client.unsubscribe(TOPICS.sls_metadata.replace('+', DATA.currentService), { noLocal: true });
+    client.publish(TOPICS.current_service, '', { retain: true });
     DATA.currentService = '';
     DATA.serviceMetadata = {};
 }
@@ -292,34 +174,6 @@ function unsetCurrentService() {
 // { serviceContextId, bam } of the current service, from the received LLS.
 function getCurrentService() {
     return lls.service(DATA.currentService);
-}
-
-function loadSLSMetadata(meta, topic) {
-    let sls = topic.split('/').at(-1);
-
-    if (!meta || meta == '') {
-        DATA.serviceMetadata[sls] = undefined;
-        if (sls == 'bald') {
-            DATA.serviceMetadata.baldHandler = undefined;
-        }
-        return;
-    }
-
-    let t = JSON.parse(meta);
-    if (sls == 'esg') {
-        DATA.serviceMetadata.esg = t;
-
-        if (DATA.rxgui.current == GUI.bootstrap_app) {
-            setDisplayGui(GUI.bootstrap_app);
-        }
-    }
-    else if (sls == 'bald') {
-        DATA.serviceMetadata.bald = t;
-
-        if (DATA.serviceMetadata.baldHandler) {
-            DATA.serviceMetadata.baldHandler(t);
-        }
-    }
 }
 
 function getServiceSLS() {
@@ -347,7 +201,7 @@ function getVideoStreamURL() {
 
 // Returns the promise of the removal of the associated origin.
 function openServiceInfo() {
-    if (DATA.rxgui.current == '') {
+    if (DATA.rxgui.current === '') {
         setDisplayGui(`${GUI.bootstrap_app}?mode=info`);
     }
     if (DATA.graphicsApp) {
@@ -356,6 +210,148 @@ function openServiceInfo() {
     return Promise.resolve();
 }
 
+// Profiles read directly from storage, all of them, without the visibility
+// filter. A base without profiles gets the default profile. A Redis failure
+// rejects.
+async function refreshUserData() {
+    let ids = await redis.smembers('users:index');
+    if (ids.length === 0) {
+        await profiles.ensureDefaultProfile();
+        ids = await redis.smembers('users:index');
+    }
+
+    const details = await Promise.all(ids.map(async (id) => {
+        const stored = await redis.hgetall(`user:${id}`);
+        return { id, name: stored.nickname || stored.name || id, avatar: stored.avatar || null };
+    }));
+
+    DATA.users.length = 0;
+    details.forEach((user) => DATA.users.push(user));
+    logger.info(`Loaded ${DATA.users.length} users from Redis`);
+}
+
+// Boot and MQTT path: retries and logs. Without a current profile, the
+// first one; after that, only the choice in the chooser sets it.
+async function loadUserData(attempt = 1) {
+    try {
+        await refreshUserData();
+        if (DATA.users.length > 0 && !DATA.currentUser) {
+            await setCurrentUser(DATA.users[0].id);
+        }
+    } catch (err) {
+        // Redis may be slow to start: retry, with backoff.
+        if (attempt < USER_LOAD_ATTEMPTS) {
+            const delay = attempt * USER_LOAD_STEP_MS;
+            logger.info(`Loading users from Redis failed (attempt ${attempt}/${USER_LOAD_ATTEMPTS}, `
+                + `retry in ${delay}ms): ${err.message}`);
+            setTimeout(() => loadUserData(attempt + 1), delay);
+        } else {
+            logger.error(`Gave up loading users from Redis after ${attempt} attempts: ${err.message}`);
+        }
+    }
+}
+
+function registerAssociatedOrigin(origin) {
+    const scid = DATA.currentService;
+    if (!scid) {
+        return Promise.reject(new Error(`no current service: origin ${origin} not registered as associated`));
+    }
+    return redisFunctions.originRegister(origin, scid).then(() => origin);
+}
+
+function unregisterAssociatedOrigin(origin) {
+    return redisFunctions.originRemove(origin).then(() => undefined);
+}
+
+// Change of state of the application, for the other components; published
+// here until the Application Lifecycle Manager exists.
+function publishApplicationState(app, state) {
+    const message = { serviceContextId: app.serviceContextId, appId: app.appId, origin: app.origin, state };
+    client.publish(TOPICS.application_state, JSON.stringify(message));
+}
+
+// Writes lastAccess on every change of the current user, including one that
+// arrives on aop/currentUser. The echo of its own publication is ignored;
+// the retained message received at boot counts as an access.
+function loadCurrentUser(message) {
+    const uid = message.toString();
+    if (uid === DATA.currentUser) {
+        return;
+    }
+    DATA.currentUser = uid;
+    profiles.touchLastAccess(uid).catch((err) => {
+        logger.error(`[profiles] failed to write lastAccess of ${uid}: ${err.message}`);
+    });
+}
+
+function loadCurrentService(message) {
+    DATA.currentService = message.toString();
+}
+
+function loadSLSMetadata(meta, topic) {
+    const fragment = topic.split('/').at(-1);
+
+    if (!meta) {
+        DATA.serviceMetadata[fragment] = undefined;
+        if (fragment === 'bald') {
+            DATA.serviceMetadata.baldHandler = undefined;
+        }
+        return;
+    }
+
+    const content = JSON.parse(meta);
+    if (fragment === 'esg') {
+        DATA.serviceMetadata.esg = content;
+        if (DATA.rxgui.current === GUI.bootstrap_app) {
+            setDisplayGui(GUI.bootstrap_app);
+        }
+    } else if (fragment === 'bald') {
+        DATA.serviceMetadata.bald = content;
+        if (DATA.serviceMetadata.baldHandler) {
+            DATA.serviceMetadata.baldHandler(content);
+        }
+    }
+}
+
+function mqttTopicMatch(topic, filter) {
+    const levels = filter.split('/').map((level) => {
+        if (level === '+') {
+            return '[^/#+]+';
+        }
+        if (level === '#') {
+            return '.*';
+        }
+        return level.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    });
+    return new RegExp(`^${levels.join('/')}$`).test(topic);
+}
+
+function onConnect() {
+    logger.info('Connected to MQTT broker');
+    handlers.forEach((_, filter) => {
+        client.subscribe(filter, { noLocal: true });
+    });
+
+    // Additional topics to handle, but no subscribe yet
+    handlers.set(TOPICS.sls_metadata, loadSLSMetadata);
+
+    loadUserData();
+}
+
+function onMessage(topic, message) {
+    for (const [filter, handler] of handlers) {
+        if (mqttTopicMatch(topic, filter)) {
+            handler(message.toString(), topic);
+            return;
+        }
+    }
+    logger.info(`no handler for topic ${topic}`);
+}
+
+whenReady(redis, `limpeza de ${ORIGINS_KEY}`, () => redisFunctions.originsClear());
+lls.start((topic, message) => client.publish(topic, message, { retain: true }));
+client.on('connect', onConnect);
+client.on('message', onMessage);
 
 module.exports = {
     GUI,
@@ -378,5 +374,5 @@ module.exports = {
     getVideoStreamURL,
     openServiceInfo,
     loadUserData,
-    refreshUserData
-}
+    refreshUserData,
+};
