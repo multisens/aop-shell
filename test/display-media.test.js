@@ -95,6 +95,7 @@ function page(files) {
         setInterval() {}, mqtt: { connect }, location: { protocol: 'http:', host: 'tv.test' },
     });
     ctx.window = ctx;
+    ctx.addEventListener = () => {};
     vm.runInContext(fs.readFileSync(POPUP_JS, 'utf8'), ctx, { filename: 'popup.js' });
     vm.runInContext(fs.readFileSync(DISPLAY_JS, 'utf8'), ctx, { filename: 'display.js' });
     const setVideoUrl = (url) => vm.runInContext('setVideoUrl', ctx)(url);

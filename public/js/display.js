@@ -15,8 +15,14 @@ const TIME_UPDATE_MS = 1000;
 const VIDEO_ELEMENT = '<video id="video" class="video-js" autoplay muted playsinline></video>';
 const DASH_TYPE = 'application/dash+xml';
 const HLS_TYPE = 'application/x-mpegURL';
-// 27: Escape; 33, 34: PageUp, PageDown; 93: ContextMenu.
-const PLATFORM_KEYS = [27, 33, 34, 93];
+// 27: Escape; 33, 34: PageUp, PageDown; 36: Home; 93: ContextMenu.
+const KEY_ESCAPE = 27;
+const PLATFORM_KEYS = [KEY_ESCAPE, 33, 34, 36, 93];
+// With a broadcaster application running, Escape goes to it as Back and
+// ContextMenu as Menu (ABNT NBR 25608, 10.6.3 and Table B.1).
+const APPLICATION_KEYS = { Escape: 'BrowserBack', ContextMenu: 'ContextMenu' };
+// The Back the application did not cancel, from the bridge in its document.
+const BACK_MESSAGE_TYPE = 'tv30-aop-back';
 const HLS_MASTER_TAG = '#EXT-X-STREAM-INF';
 const HLS_MEDIA_TAG = '#EXT-X-MEDIA:';
 const HLS_MAP_TAG = '#EXT-X-MAP';
@@ -288,36 +294,55 @@ function relayKey(event) {
         return;
     }
     event.preventDefault();
-    if (PLATFORM_KEYS.includes(event.keyCode)) {
-        fetch(`keydown/${event.keyCode}`);
+    const applicationKey = APPLICATION_KEYS[event.key];
+    const graphicsRunning = $('#graphics').attr('src') !== '';
+    if (graphicsRunning && applicationKey !== undefined) {
+        graphicsEvent('keydown', { key: applicationKey });
+    } else if (PLATFORM_KEYS.includes(event.keyCode)) {
+        sendPlatformKey(event.keyCode);
     } else if ($('#rxgui').attr('src') !== '') {
         const keydown = new KeyboardEvent('keydown', { key: event.key });
         $('#rxgui').contents()[0].dispatchEvent(keydown);
-    } else if ($('#graphics').attr('src') !== '') {
+    } else if (graphicsRunning) {
         graphicsEvent('keydown', { key: event.key });
     }
 }
 
-// The broadcaster application runs on its own origin, and the same-origin
-// policy prevents dispatching the event in its document: it goes by
-// postMessage, only to that origin.
+// The broadcaster application runs on its own origin: the event goes by
+// postMessage, only to that origin, to the bridge the object proxy puts in
+// its document. While the initial document (about:blank) of the frame is
+// there, there is nothing to notify.
 function graphicsEvent(name, init) {
     const frame = document.getElementById('graphics');
-    if (!frame.getAttribute('src') || !frame.contentWindow) {
-        return;
-    }
-    const doc = frameDocument(frame);
-    if (doc) {
-        // Initial document (about:blank) while loading: nothing to notify.
-        if (doc.location.href === 'about:blank') {
-            return;
-        }
-        doc.dispatchEvent(localEvent(name, init));
+    if (!frame.getAttribute('src') || !frame.contentWindow || frameDocument(frame)) {
         return;
     }
     const target = new URL(frame.src, window.location.href).origin;
     const message = Object.assign({ type: 'tv30-aop-event', event: name }, init);
     frame.contentWindow.postMessage(message, target);
+}
+
+// A Back the application did not cancel does what Escape does without it.
+function onGraphicsMessage(event) {
+    const frame = document.getElementById('graphics');
+    if (!frame.getAttribute('src') || event.source !== frame.contentWindow) {
+        return;
+    }
+    if (event.origin !== new URL(frame.src, window.location.href).origin) {
+        return;
+    }
+    if (!event.data || event.data.type !== BACK_MESSAGE_TYPE) {
+        return;
+    }
+    sendPlatformKey(KEY_ESCAPE);
+}
+
+// The key goes to the platform (graphic-overlays, keydown/<keyCode>); a
+// failure goes to the console.
+function sendPlatformKey(keyCode) {
+    fetch(`keydown/${keyCode}`).catch((err) => {
+        console.error(`Tecla ${keyCode} nao enviada a plataforma:`, err);
+    });
 }
 
 // The document of the frame, or null when its origin is another one.
@@ -327,13 +352,6 @@ function frameDocument(frame) {
     } catch (err) {
         return null;
     }
-}
-
-function localEvent(name, init) {
-    if (name === 'keydown') {
-        return new KeyboardEvent('keydown', { key: init.key });
-    }
-    return new CustomEvent(name, { detail: init.detail });
 }
 
 // The play time of the video element of the page load goes to the graphics
@@ -350,6 +368,7 @@ function randomHex(bytes) {
 }
 
 document.addEventListener('keydown', relayKey);
+window.addEventListener('message', onGraphicsMessage);
 connect();
 setInterval(postVideoTime, TIME_UPDATE_MS, document.getElementById('video'));
 document.getElementById('popup').style.display = 'none';

@@ -9,6 +9,7 @@ const KEY_ESCAPE = '27';
 const KEY_CONTEXT_MENU = '93';
 const KEY_PAGE_UP = '33';
 const KEY_PAGE_DOWN = '34';
+const KEY_HOME = '36';
 
 const router = express.Router();
 
@@ -28,6 +29,7 @@ router.get('/keydown/:keyCode', (req, res) => {
     switch (req.params.keyCode) {
         case KEY_ESCAPE:
         case KEY_CONTEXT_MENU:
+        case KEY_HOME:
             core.openServiceInfo();
             break;
         case KEY_PAGE_UP:
