@@ -209,7 +209,7 @@ test('o cliente mqtt (o pacote da pagina) conecta pelo AoP em ws://<host>/mqtt',
     const broker = await startBroker(); closers.push(broker.close);
     const aop = await startAop(broker.port); closers.push(aop.close);
 
-    const client = mqtt.connect(`ws://127.0.0.1:${aop.port}/mqtt`, { clientId: 'rp-display-teste', reconnectPeriod: 0, connectTimeout: 3000 });
+    const client = mqtt.connect(`ws://127.0.0.1:${aop.port}/mqtt`, { clientId: 'aop-shell-teste', reconnectPeriod: 0, connectTimeout: 3000 });
     try {
         await new Promise((resolve, reject) => {
             client.once('connect', resolve);
@@ -222,7 +222,7 @@ test('o cliente mqtt (o pacote da pagina) conecta pelo AoP em ws://<host>/mqtt',
     assert.equal(broker.upgrades.length, 1);
     assert.equal(broker.upgrades[0].url, '/mqtt');
     assert.equal(broker.streams.length, 1, 'a conexao abriu com o CONNECT do MQTT');
-    assert.ok(broker.streams[0].bytes.includes(Buffer.from('rp-display-teste')), 'CONNECT com o clientId do cliente');
+    assert.ok(broker.streams[0].bytes.includes(Buffer.from('aop-shell-teste')), 'CONNECT com o clientId do cliente');
 });
 
 test('host de aplicacao: /mqtt responde 404 e nada chega ao broker', async () => {

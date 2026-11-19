@@ -5,7 +5,11 @@
 const DISPLAY_TOPIC = 'aop/display/layers/';
 const VIDEO_EVENT_TOPIC = 'video/event';
 const MQTT_CONNECT_TIMEOUT_MS = 4000;
-const MQTT_CLIENT_ID = 'rp-display';
+// One MQTT client identifier per page: two pages of the TV open at once do
+// not take the connection of each other.
+const MQTT_CLIENT_ID_PREFIX = 'aop-shell-';
+const MQTT_CLIENT_ID_SUFFIX_BYTES = 4;
+const MQTT_CLIENT_ID = MQTT_CLIENT_ID_PREFIX + randomHex(MQTT_CLIENT_ID_SUFFIX_BYTES);
 const PLAYER_RESTART_MS = 500;
 const TIME_UPDATE_MS = 1000;
 const VIDEO_ELEMENT = '<video id="video" class="video-js" autoplay muted playsinline></video>';
@@ -31,7 +35,7 @@ let requestedUrl = '';
 function connect() {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const client = mqtt.connect(`${scheme}://${window.location.host}/mqtt`, {
-        clean: false,
+        clean: true,
         connectTimeout: MQTT_CONNECT_TIMEOUT_MS,
         clientId: MQTT_CLIENT_ID,
     });
@@ -298,6 +302,12 @@ function localEvent(name, init) {
 function postVideoTime(video) {
     const frame = document.getElementById('graphics');
     frame.contentWindow.postMessage({ time: video.currentTime }, '*');
+}
+
+// Hexadecimal text of bytes random bytes.
+function randomHex(bytes) {
+    const values = crypto.getRandomValues(new Uint8Array(bytes));
+    return Array.from(values, (value) => value.toString(16).padStart(2, '0')).join('');
 }
 
 document.addEventListener('keydown', relayKey);

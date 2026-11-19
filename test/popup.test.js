@@ -62,7 +62,7 @@ function page() {
     const warnings = [];
     const console = { log() {}, warn: (...a) => warnings.push(a.join(' ')), error: (...a) => warnings.push(a.join(' ')) };
 
-    const ctx = vm.createContext({ $, QRCode, document, console, setTimeout, clearTimeout, mqtt,
+    const ctx = vm.createContext({ $, QRCode, document, console, setTimeout, clearTimeout, mqtt, crypto: globalThis.crypto,
         setInterval() {}, location: { protocol: 'http:', host: 'tv.test' }, fetch: () => undefined });
     ctx.window = ctx;
     vm.runInContext(fs.readFileSync(POPUP_JS, 'utf8'), ctx, { filename: 'popup.js' });

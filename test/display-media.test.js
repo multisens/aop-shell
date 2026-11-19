@@ -68,15 +68,20 @@ function page(files) {
         addEventListener() {},
     };
     const client = { on() {}, subscribe() {}, publish() {} };
+    const connections = [];
+    const connect = (url, options) => {
+        connections.push(options);
+        return client;
+    };
     const ctx = vm.createContext({
-        $, videojs, fetch, console, document, URL, setTimeout, clearTimeout,
-        setInterval() {}, mqtt: { connect: () => client }, location: { protocol: 'http:', host: 'tv.test' },
+        $, videojs, fetch, console, document, URL, setTimeout, clearTimeout, crypto: globalThis.crypto,
+        setInterval() {}, mqtt: { connect }, location: { protocol: 'http:', host: 'tv.test' },
     });
     ctx.window = ctx;
     vm.runInContext(fs.readFileSync(POPUP_JS, 'utf8'), ctx, { filename: 'popup.js' });
     vm.runInContext(fs.readFileSync(DISPLAY_JS, 'utf8'), ctx, { filename: 'display.js' });
     const setVideoUrl = (url) => vm.runInContext('setVideoUrl', ctx)(url);
-    return { setVideoUrl, players, fetched, errors, popup };
+    return { setVideoUrl, players, fetched, errors, popup, connections };
 }
 
 test('HLS em fMP4: a mestre e as de midia tem #EXT-X-MAP, e a mestre vai ao reprodutor', async () => {
@@ -125,4 +130,12 @@ test('fonte pedida durante a verificacao do HLS: a verificacao antiga nao inicia
     await p.setVideoUrl('');
     await checking;
     assert.equal(p.players.length, 0);
+});
+
+test('cada pagina conecta ao MQTT com o proprio identificador, aop-shell-<sufixo>, e sessao limpa', () => {
+    const one = page({}).connections[0];
+    const other = page({}).connections[0];
+    assert.match(one.clientId, /^aop-shell-[0-9a-f]{8}$/);
+    assert.notEqual(one.clientId, other.clientId);
+    assert.equal(one.clean, true);
 });
