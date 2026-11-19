@@ -11,7 +11,6 @@ const MQTT_CLIENT_ID_PREFIX = 'aop-shell-';
 const MQTT_CLIENT_ID_SUFFIX_BYTES = 4;
 const MQTT_CLIENT_ID = MQTT_CLIENT_ID_PREFIX + randomHex(MQTT_CLIENT_ID_SUFFIX_BYTES);
 const PLAYER_RESTART_MS = 500;
-const TIME_UPDATE_MS = 1000;
 const VIDEO_ELEMENT = '<video id="video" class="video-js" autoplay muted playsinline></video>';
 const DASH_TYPE = 'application/dash+xml';
 const HLS_TYPE = 'application/x-mpegURL';
@@ -49,7 +48,9 @@ function connect() {
     });
     client.on('connect', () => {
         subscribeTopics(client);
-        fetch('ready');
+        fetch('ready').catch((err) => {
+            console.error('Prontidao nao enviada a plataforma:', err);
+        });
     });
     // An exception in the handling goes to the console: escaping to the MQTT
     // client, it would stop the page from handling the next messages.
@@ -354,13 +355,6 @@ function frameDocument(frame) {
     }
 }
 
-// The play time of the video element of the page load goes to the graphics
-// layer every second.
-function postVideoTime(video) {
-    const frame = document.getElementById('graphics');
-    frame.contentWindow.postMessage({ time: video.currentTime }, '*');
-}
-
 // Hexadecimal text of bytes random bytes.
 function randomHex(bytes) {
     const values = crypto.getRandomValues(new Uint8Array(bytes));
@@ -370,5 +364,4 @@ function randomHex(bytes) {
 document.addEventListener('keydown', relayKey);
 window.addEventListener('message', onGraphicsMessage);
 connect();
-setInterval(postVideoTime, TIME_UPDATE_MS, document.getElementById('video'));
 document.getElementById('popup').style.display = 'none';

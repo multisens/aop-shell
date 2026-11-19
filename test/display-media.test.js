@@ -32,9 +32,17 @@ function page(files) {
             popup.html = s;
             return popupEl;
         },
-        height() { return popupEl; },
-        show() { popup.visible = true; return popupEl; },
-        hide() { popup.visible = false; return popupEl; },
+        height() {
+            return popupEl;
+        },
+        show() {
+            popup.visible = true;
+            return popupEl;
+        },
+        hide() {
+            popup.visible = false;
+            return popupEl;
+        },
     };
     const video = { length: 1, replaceWith() {}, attr() {}, css() {} };
     const $ = (selector) => (selector === '#popup' ? popupEl : video);
@@ -43,11 +51,15 @@ function page(files) {
     function videojs() {
         const player = {
             sources: [],
-            src(source) { player.sources.push(source); },
+            src(source) {
+                player.sources.push(source);
+            },
             play: () => Promise.resolve(),
             on() {},
             isDisposed: () => false,
-            dispose() { player.disposed = true; },
+            dispose() {
+                player.disposed = true;
+            },
             currentSource: () => player.sources.at(-1),
         };
         players.push(player);
@@ -59,10 +71,16 @@ function page(files) {
             create() {
                 const dash = {
                     sources: [],
-                    initialize(element, url) { dash.sources.push(url); },
-                    attachSource(url) { dash.sources.push(url); },
+                    initialize(element, url) {
+                        dash.sources.push(url);
+                    },
+                    attachSource(url) {
+                        dash.sources.push(url);
+                    },
                     on() {},
-                    destroy() { dash.destroyed = true; },
+                    destroy() {
+                        dash.destroyed = true;
+                    },
                 };
                 dashPlayers.push(dash);
                 return dash;
@@ -79,7 +97,13 @@ function page(files) {
         return { ok: true, status: 200, text: async () => text };
     };
     const errors = [];
-    const console = { log() {}, warn() {}, error: (...a) => errors.push(a.join(' ')) };
+    const console = {
+        log() {},
+        warn() {},
+        error: (...a) => {
+            errors.push(a.join(' '));
+        },
+    };
     const document = {
         getElementById: (id) => ({ popup: { style: {} }, video: {}, graphics: {} }[id] || null),
         addEventListener() {},
@@ -91,8 +115,18 @@ function page(files) {
         return client;
     };
     const ctx = vm.createContext({
-        $, videojs, dashjs, fetch, console, document, URL, setTimeout, clearTimeout, crypto: globalThis.crypto,
-        setInterval() {}, mqtt: { connect }, location: { protocol: 'http:', host: 'tv.test' },
+        $,
+        videojs,
+        dashjs,
+        fetch,
+        console,
+        document,
+        URL,
+        setTimeout,
+        clearTimeout,
+        crypto: globalThis.crypto,
+        mqtt: { connect },
+        location: { protocol: 'http:', host: 'tv.test' },
     });
     ctx.window = ctx;
     ctx.addEventListener = () => {};

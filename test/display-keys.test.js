@@ -53,7 +53,6 @@ function page(graphicsSrc) {
         setTimeout,
         clearTimeout,
         crypto: globalThis.crypto,
-        setInterval() {},
         fetch: async (url) => {
             fetched.push(url);
             return { ok: true };

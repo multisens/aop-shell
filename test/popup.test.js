@@ -22,13 +22,22 @@ function page() {
     let now = 0;
     let seq = 0;
     const timers = new Map();
-    const setTimeout = (fn, ms) => { const id = ++seq; timers.set(id, { at: now + (Number(ms) || 0), fn }); return id; };
-    const clearTimeout = id => { timers.delete(id); };
-    const advance = ms => {
+    const setTimeout = (fn, ms) => {
+        seq += 1;
+        timers.set(seq, { at: now + (Number(ms) || 0), fn });
+        return seq;
+    };
+    const clearTimeout = (id) => {
+        timers.delete(id);
+    };
+    const advance = (ms) => {
         const end = now + ms;
         for (;;) {
-            const due = [...timers.entries()].filter(([, t]) => t.at <= end).sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
-            if (!due) break;
+            const pending = [...timers.entries()].filter(([, t]) => t.at <= end);
+            const due = pending.sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0];
+            if (!due) {
+                break;
+            }
             timers.delete(due[0]);
             now = due[1].at;
             due[1].fn();
@@ -39,31 +48,68 @@ function page() {
     // #popup: only what popup.js uses.
     const el = { html: '', visible: false, height: '' };
     const popupEl = {
-        html(s) { if (s === undefined) return el.html; el.html = s; return popupEl; },
-        height(h) { el.height = h; return popupEl; },
-        show() { el.visible = true; return popupEl; },
-        hide() { el.visible = false; return popupEl; },
+        html(s) {
+            if (s === undefined) {
+                return el.html;
+            }
+            el.html = s;
+            return popupEl;
+        },
+        height(h) {
+            el.height = h;
+            return popupEl;
+        },
+        show() {
+            el.visible = true;
+            return popupEl;
+        },
+        hide() {
+            el.visible = false;
+            return popupEl;
+        },
     };
-    const $ = sel => {
-        if (sel === '#popup') return popupEl;
+    const $ = (sel) => {
+        if (sel === '#popup') {
+            return popupEl;
+        }
         throw new Error(`seletor not in the schema no duble: ${sel}`);
     };
     const qrcodes = [];
-    function QRCode(target, opts) { qrcodes.push({ target, text: opts.text }); }
+    function QRCode(target, opts) {
+        qrcodes.push({ target, text: opts.text });
+    }
     // #qrcode while the pop-up has it; #popup, #video and #graphics for the
     // start of display.js.
     const others = { popup: { style: {} }, video: {}, graphics: {} };
     const document = {
-        getElementById: id => (id === 'qrcode' ? (el.html.includes('id="qrcode"') ? { id } : null) : others[id] || null),
+        getElementById: (id) => {
+            if (id !== 'qrcode') {
+                return others[id] || null;
+            }
+            return el.html.includes('id="qrcode"') ? { id } : null;
+        },
         addEventListener() {},
     };
     const loadClient = { on() {}, subscribe() {}, publish() {} };
     const mqtt = { connect: () => loadClient };
     const warnings = [];
-    const console = { log() {}, warn: (...a) => warnings.push(a.join(' ')), error: (...a) => warnings.push(a.join(' ')) };
+    const warn = (...a) => {
+        warnings.push(a.join(' '));
+    };
+    const console = { log() {}, warn, error: warn };
 
-    const ctx = vm.createContext({ $, QRCode, document, console, setTimeout, clearTimeout, mqtt, crypto: globalThis.crypto,
-        setInterval() {}, location: { protocol: 'http:', host: 'tv.test' }, fetch: () => undefined });
+    const ctx = vm.createContext({
+        $,
+        QRCode,
+        document,
+        console,
+        setTimeout,
+        clearTimeout,
+        mqtt,
+        crypto: globalThis.crypto,
+        location: { protocol: 'http:', host: 'tv.test' },
+        fetch: () => Promise.resolve({ ok: true }),
+    });
     ctx.window = ctx;
     ctx.addEventListener = () => {};
     vm.runInContext(fs.readFileSync(POPUP_JS, 'utf8'), ctx, { filename: 'popup.js' });
@@ -71,7 +117,9 @@ function page() {
     const published = [];
     // The list and the pair come from this side (deepEqual compares the Array
     // prototype).
-    ctx.__publish = (t, m) => published.push([t, m]);
+    ctx.__publish = (t, m) => {
+        published.push([t, m]);
+    };
     vm.runInContext('publishTopic = (t, m) => __publish(t, m);', ctx);
 
     const deliver = (topic, msg) => vm.runInContext('mqttMessage', ctx)(topic, Buffer.from(msg));
@@ -235,10 +283,15 @@ test('excecao no tratamento de uma mensagem nao escapa para o cliente MQTT da pa
     const p = page();
     // connect() of display.js with an MQTT client double.
     const handlers = {};
-    const fakeClient = { on: (ev, h) => { handlers[ev] = h; }, subscribe() {}, publish() {} };
+    const fakeClient = {
+        on: (ev, h) => {
+            handlers[ev] = h;
+        },
+        subscribe() {},
+        publish() {},
+    };
     p.ctx.mqtt = { connect: () => fakeClient };
     p.ctx.location = { protocol: 'http:', host: 'tv.test' };
-    p.ctx.fetch = () => undefined;
     vm.runInContext('connect()', p.ctx);
     // video/size with invalid JSON: the JSON.parse of mqttMessage throws
     assert.doesNotThrow(() => handlers.message('aop/display/layers/video/size', Buffer.from('{')));
@@ -416,7 +469,9 @@ test('aviso (info) com outro aviso na tela: espera o prazo do primeiro', () => {
 test('aviso (info): fila de 3; o excedente e descartado e logado', () => {
     const p = page();
     p.deliver(YESNO, open('Autoriza?', 60000));
-    for (let i = 1; i <= 5; i++) p.deliver(INFO, aviso(`aviso ${i}`));
+    for (let i = 1; i <= 5; i++) {
+        p.deliver(INFO, aviso(`aviso ${i}`));
+    }
     assert.equal(p.state().popup_type, 'yesno');
     const descartes = p.warnings.filter(w => /aviso descartado \(fila cheia/.test(w));
     assert.equal(descartes.length, 2, p.warnings.join(' | '));
