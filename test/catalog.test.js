@@ -230,9 +230,10 @@ test('marco com canal cuja SLT ainda nao chegou: a varredura e pulada', async ()
     assert.equal(escritas.length, n);
 });
 
-test('servico do catalogo: BAM e serviceId do registro; fora dele, undefined', async () => {
+test('servico do catalogo: BAM, serviceId e bsid do registro; fora dele, undefined', async () => {
     const s = await catalog.service(gsidOf(1));
     assert.equal(s.serviceId, 1);
+    assert.equal(s.bsid, 10);
     assert.equal(s.bam.appName, 'S1');
     assert.equal(await catalog.service('urn:fora'), undefined);
 });

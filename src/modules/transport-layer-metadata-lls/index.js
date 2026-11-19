@@ -47,4 +47,14 @@ function channel(bsid) {
     return channels.get(String(bsid));
 }
 
-module.exports = { TOPIC, receive, channel };
+// The Service element of the SLT of the RF channel with this serviceId, or
+// undefined.
+function service(bsid, serviceId) {
+    const tables = channel(bsid);
+    if (!tables || !tables.slt) {
+        return undefined;
+    }
+    return (tables.slt.Service || []).find((entry) => entry.serviceId === Number(serviceId));
+}
+
+module.exports = { TOPIC, receive, channel, service };

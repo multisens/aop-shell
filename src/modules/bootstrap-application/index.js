@@ -1,12 +1,23 @@
-const core = require('../../core');
 const ejs = require('ejs');
 const express = require('express');
 const path = require('path');
-const router = express.Router();
+const core = require('../../core');
+const logger = require('../../logger');
 const service = require('./service');
 
+const router = express.Router();
+
+// initialMediaURL (BpAFR-11) out of its form: 400, and nothing changes.
 router.get('/', async (req, res) => {
-    service.openBootstrapApp(req.query.mode);
+    let initialMediaURL;
+    try {
+        initialMediaURL = service.initialMediaParameter(req.query.initialMediaURL);
+    } catch (err) {
+        logger.error(`[bootstrap] ${err.message}`);
+        res.status(400).type('text/plain').send(err.message);
+        return;
+    }
+    service.openBootstrapApp(req.query.mode, initialMediaURL);
 
     const html = await ejs.renderFile(path.join(__dirname, 'view.ejs'),
         Object.assign({

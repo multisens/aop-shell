@@ -37,3 +37,10 @@ test('tabela que nao e JSON vai ao log e a anterior fica; outras tabelas e topic
     lls.receive('{"x":1}', 'tlm/lls/11/extra/bamt');
     assert.deepEqual(lls.channel(11), { slt: SLT });
 });
+
+test('o elemento Service da SLT de um canal, pelo serviceId', () => {
+    lls.receive(JSON.stringify(SLT), 'tlm/lls/12/slt');
+    assert.deepEqual(lls.service(12, '1001'), SLT.Service[0]);
+    assert.equal(lls.service(12, 1002), undefined);
+    assert.equal(lls.service(13, 1001), undefined);
+});

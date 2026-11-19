@@ -7,6 +7,7 @@ const { whenReady } = require('./redis-options');
 const profiles = require('./modules/profile-manager/service');
 const lls = require('./modules/transport-layer-metadata-lls');
 const catalog = require('./modules/application-catalog/catalog');
+const dashStreams = require('./modules/dash-streams');
 const appHosts = require('./app-hosts');
 
 // Own origin of each application (./app-hosts.js), already validated.
@@ -22,6 +23,9 @@ const MQTT_CONNECT_TIMEOUT_MS = 4000;
 const USER_LOAD_ATTEMPTS = 5;
 const USER_LOAD_STEP_MS = 2000;
 const BALD_FRAGMENT = 'bald';
+const MPD_FRAGMENT = 'mpd';
+// SLT Service@configuration when absent.
+const DEFAULT_CONFIGURATION = 'Broadcast';
 
 const GUI = {
     app_catalogue: '/appcat',
@@ -50,12 +54,12 @@ const DATA = {
     // Application in the graphics layer: { appId, label, origin, target } or
     // null.
     graphicsApp: null,
-    videoStreamURL: '',
     currentUser: '',
     users: [],
     // globalServiceId of the service in use, and its entry in the
-    // Application Catalog: { serviceContextId, bam, serviceId }, serviceId
-    // being the key of the SLS topics.
+    // Application Catalog: { serviceContextId, bam, serviceId, bsid,
+    // configuration }, serviceId being the key of the SLS topics and
+    // configuration the one of its SLT Service element.
     currentService: '',
     currentEntry: undefined,
     serviceMetadata: {},
@@ -115,14 +119,9 @@ async function setDisplayGraphics(baseUrl = '', epUrl = '', appId = '') {
     await Promise.all(pending);
 }
 
+// The media source of the Persistent Media Player; empty stops it.
 function setVideoURL(url = '') {
-    if (url.endsWith('m3u8') || url.endsWith('mpd')) {
-        const file = url.split('/').pop();
-        DATA.videoStreamURL = url.replace(`/${file}`, '');
-        client.publish(TOPICS.pmplayer_url, `/videoStreamProxy/${file}`);
-    } else {
-        client.publish(TOPICS.pmplayer_url, url);
-    }
+    client.publish(TOPICS.pmplayer_url, url);
 }
 
 function setVideoSize(top = '0', left = '0', width = '100%', height = '100%') {
@@ -176,11 +175,12 @@ async function setCurrentService(sid) {
     if (DATA.currentService !== sid.toString()) {
         return;
     }
-    DATA.currentEntry = entry;
+    DATA.currentEntry = withConfiguration(entry);
     if (!entry) {
         logger.error(`[sls] ${DATA.currentService} is not in the Application Catalog: its SLS is not subscribed`);
         return;
     }
+    dashStreams.select(entry.serviceId, DATA.currentEntry.configuration);
     client.subscribe(slsFilter(entry.serviceId), { noLocal: true });
 }
 
@@ -192,10 +192,11 @@ function unsetCurrentService() {
     DATA.currentService = '';
     DATA.currentEntry = undefined;
     DATA.serviceMetadata = {};
+    dashStreams.clear();
 }
 
-// { serviceContextId, bam, serviceId } of the current service, from the
-// Application Catalog, or undefined.
+// { serviceContextId, bam, serviceId, bsid, configuration } of the current
+// service, from the Application Catalog, or undefined.
 function getCurrentService() {
     return DATA.currentEntry;
 }
@@ -217,10 +218,6 @@ function getGraphicsApp() {
 // Application running with this host label, or null.
 function getGraphicsAppByLabel(label) {
     return DATA.graphicsApp && DATA.graphicsApp.label === label ? DATA.graphicsApp : null;
-}
-
-function getVideoStreamURL() {
-    return DATA.videoStreamURL;
 }
 
 // Returns the promise of the removal of the associated origin.
@@ -321,14 +318,19 @@ async function loadCurrentService(message) {
     }
     const entry = await catalog.service(sid);
     if (DATA.currentService === sid) {
-        DATA.currentEntry = entry;
+        DATA.currentEntry = withConfiguration(entry);
     }
 }
 
-// Of the SLS fragments, only the BALD is read here; the others are left to
-// their consumers.
+// Of the SLS fragments, the BALD is read here and the MPD goes to
+// aop-dash-streams; the others are left to their consumers.
 function loadSLSMetadata(meta, topic) {
-    const fragment = topic.split('/').at(-1);
+    const parts = topic.split('/');
+    const fragment = parts.at(-1);
+    if (fragment === MPD_FRAGMENT) {
+        dashStreams.receive(parts[2], meta);
+        return;
+    }
     if (fragment !== BALD_FRAGMENT) {
         return;
     }
@@ -350,6 +352,17 @@ function loadSLSMetadata(meta, topic) {
     if (DATA.serviceMetadata.baldHandler) {
         DATA.serviceMetadata.baldHandler(content);
     }
+}
+
+// The catalog entry with the configuration of its SLT Service element, or
+// undefined without an entry.
+function withConfiguration(entry) {
+    if (!entry) {
+        return undefined;
+    }
+    const sltService = lls.service(entry.bsid, entry.serviceId);
+    const configuration = sltService && sltService.configuration ? sltService.configuration : DEFAULT_CONFIGURATION;
+    return { ...entry, configuration };
 }
 
 // tlm/sls/<serviceId>/#.
@@ -418,7 +431,6 @@ module.exports = {
     setBALDHandler,
     getGraphicsApp,
     getGraphicsAppByLabel,
-    getVideoStreamURL,
     openServiceInfo,
     loadUserData,
     refreshUserData,

@@ -13,9 +13,17 @@ const DASH_TYPE = 'application/dash+xml';
 const HLS_TYPE = 'application/x-mpegURL';
 // 27: Escape; 33, 34: PageUp, PageDown; 93: ContextMenu.
 const PLATFORM_KEYS = [27, 33, 34, 93];
+const HLS_MASTER_TAG = '#EXT-X-STREAM-INF';
+const HLS_MEDIA_TAG = '#EXT-X-MEDIA:';
+const HLS_MAP_TAG = '#EXT-X-MAP';
+const HLS_URI_ATTRIBUTE = /URI="([^"]*)"/;
+const HLS_REFUSED_NOTICE_MS = 8000;
 
 let player = null;
 let publishTopic = null;
+// The last media source asked for: a check of an older one that ends later
+// does not start it.
+let requestedUrl = '';
 
 // MQTT on the own origin of the page, on /mqtt; the AoP passes it on to the
 // broker (src/mqtt-ws.js). location.host is the name and port by which the
@@ -64,7 +72,9 @@ function mqttMessage(topic, message) {
     if (['graphics', 'rxgui'].includes(layer)) {
         $(`#${layer}`).attr('src', message.toString());
     } else if (layer === 'video/url') {
-        setVideoUrl(message.toString());
+        setVideoUrl(message.toString()).catch((err) => {
+            console.error('Error while processing DASH MPD/HLS M3U8:', err);
+        });
     } else if (layer === 'video/size') {
         $('#video').css(JSON.parse(message));
     } else if (layer.startsWith('popup')) {
@@ -73,8 +83,11 @@ function mqttMessage(topic, message) {
     }
 }
 
+// A player already created changes its source (PMPFR-08).
 function instancePlayer(mediaUrl, mediaType) {
     if (player) {
+        player.src({ src: mediaUrl, type: mediaType });
+        startPlayer();
         return;
     }
     player = videojs('video', {
@@ -85,7 +98,7 @@ function instancePlayer(mediaUrl, mediaType) {
         techOrder: ['html5'],
     });
     player.src({ src: mediaUrl, type: mediaType });
-    player.play();
+    startPlayer();
 
     player.on('timeupdate', () => {
         graphicsEvent('timeupdate', { detail: player.currentTime() });
@@ -93,24 +106,28 @@ function instancePlayer(mediaUrl, mediaType) {
 
     player.on('error', () => {
         console.warn('Player error — restarting...');
+        const source = player.currentSource();
         setTimeout(() => {
-            player.src({ src: mediaUrl, type: mediaType });
-            player.play();
+            player.src(source);
+            startPlayer();
         }, PLAYER_RESTART_MS);
     });
 }
 
-function setVideoUrl(url) {
+function startPlayer() {
+    const playing = player.play();
+    if (playing) {
+        playing.catch((err) => {
+            console.warn('Player did not start:', err);
+        });
+    }
+}
+
+// An HLS playlist is checked before it goes to the player.
+async function setVideoUrl(url) {
+    requestedUrl = url;
     if (url === '') {
-        if (player && !player.isDisposed()) {
-            player.dispose(true);
-            player = null;
-        }
-        if ($('#video').length > 0) {
-            $('#video').replaceWith(VIDEO_ELEMENT);
-        } else {
-            $('#main').prepend(VIDEO_ELEMENT);
-        }
+        stopPlayer();
         return;
     }
 
@@ -125,11 +142,101 @@ function setVideoUrl(url) {
         $('#video').attr('src', url);
         return;
     }
-    try {
-        instancePlayer(url, mediaType);
-    } catch (err) {
-        console.error('Error while processing DASH MPD/HLS M3U8:', err);
+    if (mediaType === HLS_TYPE) {
+        const refusal = await hlsRefusal(url);
+        if (url !== requestedUrl) {
+            return;
+        }
+        if (refusal !== '') {
+            stopPlayer();
+            refuseHls(refusal);
+            return;
+        }
     }
+    instancePlayer(url, mediaType);
+}
+
+// The player leaves, and a new video element takes its place.
+function stopPlayer() {
+    if (player && !player.isDisposed()) {
+        player.dispose(true);
+        player = null;
+    }
+    if ($('#video').length > 0) {
+        $('#video').replaceWith(VIDEO_ELEMENT);
+    } else {
+        $('#main').prepend(VIDEO_ELEMENT);
+    }
+}
+
+// ABNT NBR 25602, Annex C: HLS media segments in fragmented MPEG-4 only. A
+// media playlist without #EXT-X-MAP has MPEG-2 TS (or packed audio)
+// segments. The reason of the refusal, or '' when every media playlist has
+// it; a playlist not read is refused.
+async function hlsRefusal(url) {
+    let text;
+    try {
+        text = await playlistText(url);
+    } catch (err) {
+        return `${url}: ${err.message}`;
+    }
+    if (!text.includes(HLS_MASTER_TAG)) {
+        return mediaPlaylistRefusal(url, text);
+    }
+    for (const mediaUrl of mediaPlaylistUrls(text, url)) {
+        let media;
+        try {
+            media = await playlistText(mediaUrl);
+        } catch (err) {
+            return `${mediaUrl}: ${err.message}`;
+        }
+        const refusal = mediaPlaylistRefusal(mediaUrl, media);
+        if (refusal !== '') {
+            return refusal;
+        }
+    }
+    return '';
+}
+
+function mediaPlaylistRefusal(url, text) {
+    if (text.includes(HLS_MAP_TAG)) {
+        return '';
+    }
+    return `${url}: sem ${HLS_MAP_TAG}, segmentos MPEG-2 TS`;
+}
+
+// The media playlists of a master playlist: the URI after each
+// #EXT-X-STREAM-INF and the URI attribute of each #EXT-X-MEDIA, resolved
+// against the master playlist.
+function mediaPlaylistUrls(text, base) {
+    const lines = text.split(/\r?\n/).map((line) => line.trim());
+    const urls = [];
+    lines.forEach((line, index) => {
+        if (line.startsWith(HLS_MEDIA_TAG)) {
+            const match = HLS_URI_ATTRIBUTE.exec(line);
+            if (match) {
+                urls.push(new URL(match[1], base).href);
+            }
+        } else if (line.startsWith(HLS_MASTER_TAG) && index + 1 < lines.length) {
+            urls.push(new URL(lines[index + 1], base).href);
+        }
+    });
+    return urls;
+}
+
+async function playlistText(url) {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+    return response.text();
+}
+
+// The refusal goes to the console and to the notice of the pop-up element.
+function refuseHls(reason) {
+    console.error(`Fluxo HLS recusado: ${reason}`);
+    const notice = { value: `Fluxo HLS recusado: ${reason}`, timeout: HLS_REFUSED_NOTICE_MS };
+    handlePopupMessage('info', JSON.stringify(notice));
 }
 
 function relayKey(event) {

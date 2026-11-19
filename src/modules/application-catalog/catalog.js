@@ -41,8 +41,8 @@ async function items() {
     return catalogItems(await stored());
 }
 
-// { serviceContextId, bam, serviceId } of a listed service, or undefined; a
-// Redis failure rejects. A key of another type counts as empty.
+// { serviceContextId, bam, serviceId, bsid } of a listed service, or
+// undefined; a Redis failure rejects. A key of another type counts as empty.
 async function service(gsid) {
     let value;
     try {
@@ -57,7 +57,7 @@ async function service(gsid) {
         return undefined;
     }
     const record = JSON.parse(value);
-    return { serviceContextId: gsid, bam: record.bam, serviceId: record.serviceId };
+    return { serviceContextId: gsid, bam: record.bam, serviceId: record.serviceId, bsid: record.bsid };
 }
 
 async function scan(message) {

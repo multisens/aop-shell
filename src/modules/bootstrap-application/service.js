@@ -1,5 +1,6 @@
 const core = require('../../core');
 const logger = require('../../logger');
+const dashStreams = require('../dash-streams');
 const { avatarHtml } = require('../profile-manager/avatar');
 const { escapeHtml, svgImageHtml, cssHexColor } = require('../../html');
 
@@ -14,20 +15,81 @@ const DEFAULT_GENRE_COLOR = 'transparent';
 const INFO_MODE = 'info';
 const HTML5_APP_TYPE = 'TV30-Ginga-HTML5';
 const AUTOSTART = 'AUTOSTART';
+const HTTP_PROTOCOLS = ['http:', 'https:'];
+const MPD_EXTENSION = '.mpd';
+const HLS_EXTENSION = '.m3u8';
 
 function profile() {
     const user = core.getUserData(core.getCurrentUser());
     return `<span>${escapeHtml(user.name || '')}</span>${avatarHtml(user.avatar)}`;
 }
 
-function openBootstrapApp(mode) {
+// initialMediaURL is the parameter of BpAFR-11, already checked
+// (initialMediaParameter), or undefined.
+function openBootstrapApp(mode, initialMediaURL) {
     if (mode !== INFO_MODE) {
-        const bam = core.getCurrentService().bam;
-        if (bam.initialMediaURLs) {
-            core.setVideoURL(bam.initialMediaURLs[0]);
-        }
+        playInitialMedia(initialMediaURL);
     }
     core.setVideoSize('12%', '35%', '60%', '60%');
+}
+
+// The initialMediaURL parameter (BpAFR-11): undefined when absent; an
+// absolute HTTP URL of an MPD or M3U8 file (ABNT NBR 25602, Table D.1);
+// otherwise an Error.
+function initialMediaParameter(value) {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== 'string') {
+        throw new Error('initialMediaURL given more than once');
+    }
+    let url;
+    try {
+        url = new URL(value);
+    } catch (err) {
+        throw new Error(`initialMediaURL '${value}' is not an absolute URL`);
+    }
+    if (!HTTP_PROTOCOLS.includes(url.protocol)) {
+        throw new Error(`initialMediaURL '${value}' is not HTTP`);
+    }
+    if (!url.pathname.endsWith(MPD_EXTENSION) && !url.pathname.endsWith(HLS_EXTENSION)) {
+        throw new Error(`initialMediaURL '${value}' is neither an MPD nor an M3U8 file`);
+    }
+    return value;
+}
+
+// BpAFR-10 and BpAFR-11: the initialMediaURL parameter; without it, the MPD
+// of the service, from its SLS; without the MPD, the first of
+// fallbackMediaURLs (Table 6) until the MPD arrives.
+function playInitialMedia(initialMediaURL) {
+    const entry = core.getCurrentService();
+    if (!entry) {
+        return;
+    }
+    if (initialMediaURL !== undefined) {
+        play(initialMediaURL, entry);
+        return;
+    }
+    const mpdUrl = dashStreams.mediaUrl(entry.serviceId);
+    if (mpdUrl !== undefined) {
+        core.setVideoURL(mpdUrl);
+        return;
+    }
+    dashStreams.onAvailable((url) => core.setVideoURL(url));
+    const fallback = (entry.bam.fallbackMediaURLs || [])[0];
+    if (fallback !== undefined) {
+        play(fallback, entry);
+    }
+}
+
+// An HLS playlist plays only in the Broadband configuration: HLS is only
+// broadband delivery (ABNT NBR 25602, Annex C).
+function play(url, entry) {
+    if (isHlsPlaylist(url) && entry.configuration !== dashStreams.BROADBAND) {
+        logger.error(`[media] HLS refused for ${entry.serviceContextId}, configuration ${entry.configuration}: ${url}`);
+        return;
+    }
+    core.setVideoURL(url);
 }
 
 function bootstrapAppData() {
@@ -107,9 +169,18 @@ function startApp(bald) {
     return Promise.all(pending);
 }
 
+function isHlsPlaylist(url) {
+    try {
+        return new URL(url).pathname.endsWith(HLS_EXTENSION);
+    } catch (err) {
+        return false;
+    }
+}
+
 module.exports = {
     profile,
     openBootstrapApp,
+    initialMediaParameter,
     bootstrapAppData,
     esgData,
     closeBootstrapApp,

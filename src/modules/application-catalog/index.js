@@ -21,14 +21,24 @@ router.get('/profile', (req, res) => {
     res.status(200).send();
 });
 
+// The initialMediaURL parameter, if given, goes on to the Bootstrap
+// Application (BpAFR-11), which checks it.
 router.get('/select', async (req, res) => {
-    if (req.query.id) {
-        await core.setCurrentService(req.query.id);
-        core.setDisplayGui(core.GUI.bootstrap_app);
-        res.status(200).send();
+    const initialMediaURL = req.query.initialMediaURL;
+    if (!req.query.id || (initialMediaURL !== undefined && typeof initialMediaURL !== 'string')) {
+        res.status(400).send();
         return;
     }
-    res.status(400).send();
+    await core.setCurrentService(req.query.id);
+    core.setDisplayGui(bootstrapAddress(initialMediaURL));
+    res.status(200).send();
 });
+
+function bootstrapAddress(initialMediaURL) {
+    if (initialMediaURL === undefined) {
+        return core.GUI.bootstrap_app;
+    }
+    return `${core.GUI.bootstrap_app}?initialMediaURL=${encodeURIComponent(initialMediaURL)}`;
+}
 
 module.exports = router;
