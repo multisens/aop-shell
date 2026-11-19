@@ -231,8 +231,8 @@ async function loadUserData(attempt = 1) {
     }
 }
 
-// tlm/tuned (implementation document, 5.2): the service of the Bootstrap
-// Application instance and the instant it became the current service.
+// tlm/tuned: the service of the Bootstrap Application instance and the instant
+// it became the current service.
 function publishTuning(entry, tunedAt) {
     const tuning = { serviceId: entry.serviceId, rfChannelId: entry.bsid, tunedAt: tunedAt.toISOString() };
     client.publish(TOPICS.tuned, JSON.stringify(tuning), { retain: true });

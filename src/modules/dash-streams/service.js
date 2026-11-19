@@ -1,9 +1,9 @@
-// aop-dash-streams (7.3): the MPD of the current service, received in its
-// SLS, kept for the Persistent Media Player with the base of the segment
-// URLs resolved (implementation document, 5.4): an absolute MPD.BaseURL is
-// the external origin; a relative one goes after the base of the object
-// proxy for the service, by concatenation. Each BaseURL is a prefix of the
-// segment URL, so one without the final '/' gets it.
+// aop-dash-streams (ABNT NBR 25608, 7.3): the MPD of the current service,
+// received in its SLS, kept for the Persistent Media Player with the base of
+// the segment URLs resolved: an absolute MPD.BaseURL is the external origin; a
+// relative one goes after the base of the object proxy for the service, by
+// concatenation. Each BaseURL is a prefix of the segment URL, so one without
+// the final '/' gets it.
 const logger = require('../../logger');
 const appHosts = require('../../app-hosts');
 

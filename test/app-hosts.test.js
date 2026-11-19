@@ -280,7 +280,7 @@ test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava service
     assert.equal(core.getCurrentService().bam.appName, 'Users');
     assert.equal(core.getCurrentService().serviceId, SERVICE_ID);
     assert.deepEqual(subscribed.slice(-1), [`tlm/sls/${SERVICE_ID}/#`]);
-    // The tuning (5.2), retained: the service, its RF channel and the instant.
+    // The tuning, retained: the service, its RF channel and the instant.
     const tuned = published.filter(([t]) => t === 'tlm/tuned').at(-1);
     assert.equal(tuned[2], true);
     const tuning = JSON.parse(tuned[1]);

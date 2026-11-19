@@ -1,6 +1,6 @@
 // aop-application-catalog: the computation of the catalog at each scan
-// (ABNT NBR 25608, 8.2; TV 3.0 Operational Guidelines, 8.2), the six
-// scenarios of the implementation document, 7.5, the groupings, and the
+// (ABNT NBR 25608, 8.2; TV 3.0 Operational Guidelines, 8.2), six scenarios
+// of RF channels, the groupings, and the
 // state in services:announced with Redis by a double.
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -94,23 +94,23 @@ const ids = c => [...c.keys()];
 const range = (from, n) => Array.from({ length: n }, (_, i) => from + i);
 const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r)); };
 
-// --- 7.5 ---------------------------------------------------------------------
-test('7.5: canal de 6 MHz com cinco servicos tipo 30 pelo ar: quatro no catalogo, sai o de maior numero virtual', () => {
+// --- scenarios ---------------------------------------------------------------
+test('cenario: canal de 6 MHz com cinco servicos tipo 30 pelo ar: quatro no catalogo, sai o de maior numero virtual', () => {
     const c = computeCatalog([canal(10, range(1, 5).map(n => svc(n)))], new Map());
     assert.deepEqual(ids(c), range(1, 4).map(gsidOf));
 });
 
-test('7.5: quatro pelo ar e quatro so pela Internet, 6 MHz: oito no catalogo', () => {
+test('cenario: quatro pelo ar e quatro so pela Internet, 6 MHz: oito no catalogo', () => {
     const services = [...range(1, 4).map(n => svc(n)), ...range(5, 4).map(n => svc(n, { main: false }))];
     assert.equal(computeCatalog([canal(10, services)], new Map()).size, 8);
 });
 
-test('7.5: canal so com servicos so pela Internet: nenhum do canal (ACFR-26)', () => {
+test('cenario: canal so com servicos so pela Internet: nenhum do canal (ACFR-26)', () => {
     const c = computeCatalog([canal(10, range(1, 3).map(n => svc(n, { main: false }))), canal(11, [svc(9)])], new Map());
     assert.deepEqual(ids(c), [gsidOf(9)]);
 });
 
-test('7.5: mesmo globalServiceId em dois canais: um so, o que ja estava no catalogo (ACFR-12)', () => {
+test('cenario: mesmo globalServiceId em dois canais: um so, o que ja estava no catalogo (ACFR-12)', () => {
     const g = gsidOf(1);
     const canais = [canal(10, [svc(1, { gsid: g })]), canal(20, [svc(2, { gsid: g, major: 20 })])];
     const antes = computeCatalog([canal(20, [svc(2, { gsid: g, major: 20 })])], new Map());
@@ -121,7 +121,7 @@ test('7.5: mesmo globalServiceId em dois canais: um so, o que ja estava no catal
     assert.equal(computeCatalog(canais, new Map()).get(g).bsid, 10);
 });
 
-test('7.5: 61 servicos validos detectados agora: 60 no catalogo, sai o ultimo pela prioridade (ACFR-27, ACFR-28)', () => {
+test('cenario: 61 servicos validos detectados agora: 60 no catalogo, sai o ultimo pela prioridade (ACFR-27, ACFR-28)', () => {
     const canais = range(1, 15).map(b => canal(b, range(b * 10, 4).map(n => svc(n, { major: b }))));
     canais.push(canal(16, [svc(500, { major: 16, rq: 10 })]));
     const c = computeCatalog(canais, new Map());
@@ -129,7 +129,7 @@ test('7.5: 61 servicos validos detectados agora: 60 no catalogo, sai o ultimo pe
     assert.ok(!c.has(gsidOf(500)), 'sai o de menor receptionQuality');
 });
 
-test('7.5: canal removido da declaracao, nova varredura: os servicos dele continuam (ACFR-21)', () => {
+test('cenario: canal removido da declaracao, nova varredura: os servicos dele continuam (ACFR-21)', () => {
     const antes = computeCatalog([canal(10, [svc(1)]), canal(20, [svc(2, { major: 20 })])], new Map());
     const c = computeCatalog([canal(10, [svc(1)])], antes);
     assert.deepEqual(ids(c), [gsidOf(1), gsidOf(2)]);

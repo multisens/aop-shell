@@ -1,6 +1,6 @@
-// aop-transport-layer-metadata-lls (7.2.2): receives the SLT and the BAMT of
-// each RF channel, in their JSON form, from the retained topics of the
-// acquisition, and keeps the last ones for the Application Catalog.
+// aop-transport-layer-metadata-lls (ABNT NBR 25608, 7.2.2): receives the SLT
+// and the BAMT of each RF channel, in their JSON form, from the retained topics
+// of the acquisition, and keeps the last ones for the Application Catalog.
 const logger = require('../../logger');
 
 const TOPIC = 'tlm/lls/#';
