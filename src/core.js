@@ -85,7 +85,7 @@ function setDisplayGui(screen) {
 // appId = appId of the BALD (host label; without it, the current service).
 // Without baseUrl, ends the application. Publishes at once; the promise is
 // the one of the registration.
-function setDisplayGraphics(baseUrl = '', epUrl = '', appId = '') {
+async function setDisplayGraphics(baseUrl = '', epUrl = '', appId = '') {
     let next = null;
     if (baseUrl !== '') {
         next = appHosts.describeApp(appId || DATA.currentService, baseUrl, APPS);
@@ -112,7 +112,7 @@ function setDisplayGraphics(baseUrl = '', epUrl = '', appId = '') {
         publishApplicationState(DATA.graphicsApp, 'started');
     }
     client.publish(TOPICS.graphics_layer, next ? appHosts.entryUrl(next.origin, epUrl) : '');
-    return Promise.all(pending).then(() => undefined);
+    await Promise.all(pending);
 }
 
 function setVideoURL(url = '') {
@@ -275,16 +275,16 @@ async function loadUserData(attempt = 1) {
     }
 }
 
-function registerAssociatedOrigin(origin) {
+async function registerAssociatedOrigin(origin) {
     const scid = DATA.currentService;
     if (!scid) {
-        return Promise.reject(new Error(`no current service: origin ${origin} not registered as associated`));
+        throw new Error(`no current service: origin ${origin} not registered as associated`);
     }
-    return redisFunctions.originRegister(origin, scid).then(() => origin);
+    await redisFunctions.originRegister(origin, scid);
 }
 
-function unregisterAssociatedOrigin(origin) {
-    return redisFunctions.originRemove(origin).then(() => undefined);
+async function unregisterAssociatedOrigin(origin) {
+    await redisFunctions.originRemove(origin);
 }
 
 // Change of state of the application, for the other components; published

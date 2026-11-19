@@ -5,6 +5,7 @@
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
+const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const path = require('path');
@@ -284,8 +285,11 @@ test('pagina da TV (GET /): conecta o MQTT na propria origem, em /mqtt, sem port
     const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
     closers.push(() => new Promise(r => server.close(r)));
     const html = await (await fetch(`http://127.0.0.1:${server.address().port}/`)).text();
-    assert.ok(html.includes('mqtt.connect(`${scheme}://${window.location.host}/mqtt`'), 'conecta em ws(s)://<host da pagina>/mqtt');
-    assert.ok(html.includes("window.location.protocol === 'https:' ? 'wss' : 'ws'"));
-    assert.equal(html.split('mqtt.connect(').length - 1, 1, 'uma conexao MQTT so');
+    assert.ok(html.includes('<script src="/js/display.js"></script>'), 'a pagina carrega /js/display.js');
     assert.doesNotMatch(html, /mqtt_ws_port|mqtt_host|:9001/);
+    const script = fs.readFileSync(path.join(__dirname, '..', 'public', 'js', 'display.js'), 'utf8');
+    assert.ok(script.includes('mqtt.connect(`${scheme}://${window.location.host}/mqtt`'), 'conecta em ws(s)://<host da pagina>/mqtt');
+    assert.ok(script.includes("window.location.protocol === 'https:' ? 'wss' : 'ws'"));
+    assert.equal(script.split('mqtt.connect(').length - 1, 1, 'uma conexao MQTT so');
+    assert.doesNotMatch(script, /mqtt_ws_port|mqtt_host|:9001/);
 });

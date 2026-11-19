@@ -1,5 +1,5 @@
 // Pop-ups of the graphics layer (public/js/popup.js and the passing on of
-// graphic-overlays/view.ejs), in a vm context with doubles of jQuery
+// public/js/display.js), in a vm context with doubles of jQuery
 // (#popup), QRCode, the clock and the MQTT publication; the real drawing is
 // in Chrome.
 const { test } = require('node:test');
@@ -9,23 +9,13 @@ const path = require('path');
 const vm = require('vm');
 
 const POPUP_JS = path.join(__dirname, '..', 'public', 'js', 'popup.js');
-const VIEW = path.join(__dirname, '..', 'src', 'modules', 'graphic-overlays', 'view.ejs');
+const DISPLAY_JS = path.join(__dirname, '..', 'public', 'js', 'display.js');
 const QR = 'aop/display/layers/popup/qrcode';
 const PIN = 'aop/display/layers/popup/pin';
 const YESNO = 'aop/display/layers/popup/yesno/message';
 const CLOSE = '{"close":true}';
 // tv3ws: PAIRING_POPUP_TIMEOUT_MS
 const PRAZO = 120000;
-
-// Inline script of the page with mqtt_message (the first <script> without
-// src).
-function viewScript() {
-    const html = fs.readFileSync(VIEW, 'utf8');
-    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
-    const s = scripts.find(c => c.includes('function mqtt_message'));
-    assert.ok(s, 'mqtt_message em view.ejs');
-    return s;
-}
 
 function page() {
     // Test clock.
@@ -60,21 +50,30 @@ function page() {
     };
     const qrcodes = [];
     function QRCode(target, opts) { qrcodes.push({ target, text: opts.text }); }
-    const document = { getElementById: id => (id === 'qrcode' && el.html.includes('id="qrcode"') ? { id } : null) };
+    // #qrcode while the pop-up has it; #popup, #video and #graphics for the
+    // start of display.js.
+    const others = { popup: { style: {} }, video: {}, graphics: {} };
+    const document = {
+        getElementById: id => (id === 'qrcode' ? (el.html.includes('id="qrcode"') ? { id } : null) : others[id] || null),
+        addEventListener() {},
+    };
+    const loadClient = { on() {}, subscribe() {}, publish() {} };
+    const mqtt = { connect: () => loadClient };
     const warnings = [];
     const console = { log() {}, warn: (...a) => warnings.push(a.join(' ')), error: (...a) => warnings.push(a.join(' ')) };
 
-    const ctx = vm.createContext({ $, QRCode, document, console, setTimeout, clearTimeout });
+    const ctx = vm.createContext({ $, QRCode, document, console, setTimeout, clearTimeout, mqtt,
+        setInterval() {}, location: { protocol: 'http:', host: 'tv.test' }, fetch: () => undefined });
     ctx.window = ctx;
     vm.runInContext(fs.readFileSync(POPUP_JS, 'utf8'), ctx, { filename: 'popup.js' });
-    vm.runInContext(viewScript(), ctx, { filename: 'view.ejs' });
+    vm.runInContext(fs.readFileSync(DISPLAY_JS, 'utf8'), ctx, { filename: 'display.js' });
     const published = [];
     // The list and the pair come from this side (deepEqual compares the Array
     // prototype).
     ctx.__publish = (t, m) => published.push([t, m]);
     vm.runInContext('publishTopic = (t, m) => __publish(t, m);', ctx);
 
-    const deliver = (topic, msg) => vm.runInContext('mqtt_message', ctx)(null, topic, Buffer.from(msg));
+    const deliver = (topic, msg) => vm.runInContext('mqttMessage', ctx)(topic, Buffer.from(msg));
     const state = () => vm.runInContext('({ has_popup, popup_type, yesno_popup })', ctx);
     return { ctx, el, deliver, state, advance, timers, qrcodes, published, warnings };
 }
@@ -233,14 +232,14 @@ test('sim/nao substituido pelo QR code: sem resposta atrasada do sim/nao, teclas
 
 test('excecao no tratamento de uma mensagem nao escapa para o cliente MQTT da pagina', () => {
     const p = page();
-    // connect() of view.ejs with an MQTT client double.
+    // connect() of display.js with an MQTT client double.
     const handlers = {};
     const fakeClient = { on: (ev, h) => { handlers[ev] = h; }, subscribe() {}, publish() {} };
     p.ctx.mqtt = { connect: () => fakeClient };
     p.ctx.location = { protocol: 'http:', host: 'tv.test' };
     p.ctx.fetch = () => undefined;
     vm.runInContext('connect()', p.ctx);
-    // video/size with invalid JSON: the JSON.parse of mqtt_message throws
+    // video/size with invalid JSON: the JSON.parse of mqttMessage throws
     assert.doesNotThrow(() => handlers.message('aop/display/layers/video/size', Buffer.from('{')));
     assert.ok(p.warnings.some(w => /video\/size nao tratada/.test(w)), p.warnings.join(' | '));
     // and the page keeps handling the next messages.
