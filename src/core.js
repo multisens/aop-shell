@@ -8,10 +8,6 @@ const profiles = require('./modules/profile-manager/service');
 const lls = require('./modules/transport-layer-metadata-lls');
 const catalog = require('./modules/application-catalog/catalog');
 const dashStreams = require('./modules/dash-streams');
-const appHosts = require('./app-hosts');
-
-// Own origin of each application (./app-hosts.js), already validated.
-const APPS = appHosts.appsConfig();
 
 // origins:associated: origin of the running application (the one the
 // browser sends in the Origin of its calls, not the proxy target) to the
@@ -43,6 +39,7 @@ const TOPICS = {
     pmplayer_url: 'aop/display/layers/video/url',
     pmplayer_size: 'aop/display/layers/video/size',
     graphics_layer: 'aop/display/layers/graphics',
+    tuned: 'tlm/tuned',
     application_state: 'aop/application-lifecycle-manager/application-state',
 };
 
@@ -51,8 +48,8 @@ const DATA = {
         current: '',
         previous: '',
     },
-    // Application in the graphics layer: { appId, label, origin, target } or
-    // null.
+    // Application in the graphics layer: { appId, origin, url,
+    // serviceContextId } or null.
     graphicsApp: null,
     currentUser: '',
     users: [],
@@ -85,37 +82,29 @@ function setDisplayGui(screen) {
     DATA.rxgui.current = screen;
 }
 
-// baseUrl = bcastEntryPackageUrl (proxy target), epUrl = bcastEntryPointUrl,
-// appId = appId of the BALD (host label; without it, the current service).
-// Without baseUrl, ends the application. Publishes at once; the promise is
-// the one of the registration.
-async function setDisplayGraphics(baseUrl = '', epUrl = '', appId = '') {
-    let next = null;
-    if (baseUrl !== '') {
-        next = appHosts.describeApp(appId || DATA.currentService, baseUrl, APPS);
-        if (!next) {
-            logger.error(`[apps] invalid bcastEntryPackageUrl, application not opened: '${baseUrl}'`);
-        }
-    }
-
+// app = { appId, origin, url } of the application to open (origin is the
+// one the browser sends in the Origin of its calls), or null to end the
+// application. Publishes at once; the promise is the one of the
+// registration of the associated origin.
+async function setDisplayGraphics(app = null) {
     const pending = [];
     const previous = DATA.graphicsApp;
-    if (previous && (!next || previous.origin !== next.origin)) {
+    if (previous && (!app || previous.origin !== app.origin)) {
         pending.push(unregisterAssociatedOrigin(previous.origin));
     }
-    if (next) {
-        pending.push(registerAssociatedOrigin(next.origin));
+    if (app) {
+        pending.push(registerAssociatedOrigin(app.origin));
     }
 
     // The application that leaves ends before the one that enters starts.
     if (previous) {
         publishApplicationState(previous, 'ended');
     }
-    DATA.graphicsApp = next ? { ...next, serviceContextId: DATA.currentService } : null;
+    DATA.graphicsApp = app ? { ...app, serviceContextId: DATA.currentService } : null;
     if (DATA.graphicsApp && DATA.graphicsApp.serviceContextId) {
         publishApplicationState(DATA.graphicsApp, 'started');
     }
-    client.publish(TOPICS.graphics_layer, next ? appHosts.entryUrl(next.origin, epUrl) : '');
+    client.publish(TOPICS.graphics_layer, app ? app.url : '');
     await Promise.all(pending);
 }
 
@@ -168,6 +157,7 @@ function getUserList() {
 // of its catalog entry; a service outside the catalog has no SLS. A Redis
 // failure rejects, with the service already published.
 async function setCurrentService(sid) {
+    const tunedAt = new Date();
     DATA.currentService = sid.toString();
     DATA.currentEntry = undefined;
     client.publish(TOPICS.current_service, sid.toString(), { retain: true });
@@ -180,8 +170,9 @@ async function setCurrentService(sid) {
         logger.error(`[sls] ${DATA.currentService} is not in the Application Catalog: its SLS is not subscribed`);
         return;
     }
-    dashStreams.select(entry.serviceId, DATA.currentEntry.configuration);
+    dashStreams.select(entry.serviceId);
     client.subscribe(slsFilter(entry.serviceId), { noLocal: true });
+    publishTuning(entry, tunedAt);
 }
 
 function unsetCurrentService() {
@@ -189,6 +180,7 @@ function unsetCurrentService() {
         client.unsubscribe(slsFilter(DATA.currentEntry.serviceId), { noLocal: true });
     }
     client.publish(TOPICS.current_service, '', { retain: true });
+    client.publish(TOPICS.tuned, '', { retain: true });
     DATA.currentService = '';
     DATA.currentEntry = undefined;
     DATA.serviceMetadata = {};
@@ -207,17 +199,6 @@ function getServiceSLS() {
 
 function setBALDHandler(handler) {
     DATA.serviceMetadata.baldHandler = handler;
-}
-
-// Application running in the graphics layer ({ appId, label, origin, target
-// }) or null.
-function getGraphicsApp() {
-    return DATA.graphicsApp;
-}
-
-// Application running with this host label, or null.
-function getGraphicsAppByLabel(label) {
-    return DATA.graphicsApp && DATA.graphicsApp.label === label ? DATA.graphicsApp : null;
 }
 
 // Returns the promise of the removal of the associated origin.
@@ -282,6 +263,13 @@ async function registerAssociatedOrigin(origin) {
 
 async function unregisterAssociatedOrigin(origin) {
     await redisFunctions.originRemove(origin);
+}
+
+// tlm/tuned (implementation document, 5.2): the service of the Bootstrap
+// Application instance and the instant it became the current service.
+function publishTuning(entry, tunedAt) {
+    const tuning = { serviceId: entry.serviceId, rfChannelId: entry.bsid, tunedAt: tunedAt.toISOString() };
+    client.publish(TOPICS.tuned, JSON.stringify(tuning), { retain: true });
 }
 
 // Change of state of the application, for the other components; published
@@ -429,8 +417,6 @@ module.exports = {
     getCurrentService,
     getServiceSLS,
     setBALDHandler,
-    getGraphicsApp,
-    getGraphicsAppByLabel,
     openServiceInfo,
     loadUserData,
     refreshUserData,

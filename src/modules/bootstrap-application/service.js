@@ -1,5 +1,6 @@
 const core = require('../../core');
 const logger = require('../../logger');
+const appHosts = require('../../app-hosts');
 const dashStreams = require('../dash-streams');
 const { avatarHtml } = require('../profile-manager/avatar');
 const { escapeHtml, svgImageHtml, cssHexColor } = require('../../html');
@@ -17,6 +18,8 @@ const HTML5_APP_TYPE = 'TV30-Ginga-HTML5';
 const AUTOSTART = 'AUTOSTART';
 const HTTP_PROTOCOLS = ['http:', 'https:'];
 const MPD_EXTENSION = '.mpd';
+// Origins of the applications, already checked at boot (environment.js).
+const APPS = appHosts.appsConfig();
 const HLS_EXTENSION = '.m3u8';
 
 function profile() {
@@ -161,12 +164,34 @@ function startApp(bald) {
     const pending = [];
     for (const entryPackage of bald.EntryPackage) {
         const autostart = !entryPackage.controlCode || entryPackage.controlCode === AUTOSTART;
-        if (autostart && entryPackage.appType === HTML5_APP_TYPE) {
-            pending.push(core.setDisplayGraphics(entryPackage.bcastEntryPackageUrl, entryPackage.bcastEntryPointUrl,
-                entryPackage.appId));
+        if (!autostart || entryPackage.appType !== HTML5_APP_TYPE) {
+            continue;
         }
+        const launch = launchOf(entryPackage);
+        if (launch === null) {
+            logger.error(`[apps] ${entryPackage.appId} not opened: no valid entry point`);
+            continue;
+        }
+        pending.push(core.setDisplayGraphics({ appId: entryPackage.appId, ...launch }));
     }
     return Promise.all(pending);
+}
+
+// ABNT NBR 25608, 10.1: with both entry points, the broadband one first;
+// the broadcast one opens on the origin of the Application Context ID
+// (implementation document, 5.4). Null without a usable entry point.
+function launchOf(entryPackage) {
+    if (entryPackage.bbandEntryPointUrl !== undefined) {
+        const broadband = appHosts.broadbandLaunch(entryPackage.bbandEntryPointUrl);
+        if (broadband !== null) {
+            return broadband;
+        }
+        logger.error(`[apps] bbandEntryPointUrl '${entryPackage.bbandEntryPointUrl}' is not an absolute HTTP URL`);
+    }
+    if (entryPackage.bcastEntryPointUrl !== undefined) {
+        return appHosts.broadcastLaunch(entryPackage.appContextId, entryPackage.bcastEntryPointUrl, APPS);
+    }
+    return null;
 }
 
 function isHlsPlaylist(url) {

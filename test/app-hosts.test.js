@@ -1,20 +1,20 @@
-// Tests of src/app-hosts.js and of the origin registration in src/core.js
-// (MQTT and Redis doubles): label, origin, Host, origins:associated, proxy by
-// Host and redirection of /graphicsAppProxy. The "bcast" is a local HTTP
-// server. Also the current profile in the core (default profile at startup
+// Tests of src/app-hosts.js and of the launch and origin registration in
+// src/core.js (MQTT and Redis doubles): origin by Application Context ID,
+// Host, origins:associated, precedence of the broadband entry point and the
+// tuning. Also the current profile in the core (default profile at startup
 // and profile removal) and the LLS delivered to the unit that owns the list
 // of services.
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
-const http = require('http');
+const crypto = require('crypto');
 const path = require('path');
 const Module = require('module');
 const { EventEmitter } = require('events');
-const express = require('express');
 
 // Fixed configuration: the core reads it once, when loaded.
 process.env.APPS_DOMAIN = 'apps.localhost';
 process.env.AOP_PUBLIC_PORT = '8080';
+process.env.OBJECT_PROXY_PUBLIC_PORT = '8081';
 
 const appHosts = require('../src/app-hosts');
 
@@ -100,7 +100,6 @@ function stubFile(file, exports) {
 stubFile(require.resolve(path.join(__dirname, '..', 'src', 'redis-client')), fakeRedis);
 stubFile(require.resolve('mqtt'), { connect: () => fakeMqtt });
 
-const quiet = { log() {}, error() {} };
 const realLog = console.log;
 const realError = console.error;
 // The core logs connection, profiles and proxy.
@@ -115,95 +114,38 @@ const core = require('../src/core');
 const bootstrap = require('../src/modules/bootstrap-application/service');
 fakeMqtt.emit('connect');
 
-// --- utilities ---------------------------------------------------------------
-function listen(handler) {
-    return new Promise(r => { const s = http.createServer(handler).listen(0, '127.0.0.1', () => r(s)); });
-}
-function close(server) { return new Promise(r => server.close(r)); }
-function request(port, { host, method = 'GET', path: p = '/', body, headers = {} }) {
-    return new Promise((resolve, reject) => {
-        const req = http.request({
-            host: '127.0.0.1', port, method, path: p, agent: false,
-            headers: { host, ...headers, ...(body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}) },
-        }, res => {
-            let data = '';
-            res.setEncoding('utf8');
-            res.on('data', c => { data += c; });
-            res.on('end', () => resolve({ status: res.statusCode, body: data, location: res.headers.location }));
-        });
-        req.on('error', reject);
-        if (body) req.write(body);
-        req.end();
-    });
-}
-// "bcast": returns what it received.
-function fakeBcast() {
-    return listen((req, res) => {
-        let body = '';
-        req.on('data', c => { body += c; });
-        req.on('end', () => {
-            res.setHeader('content-type', 'application/json');
-            res.end(JSON.stringify({ bcast: true, host: req.headers.host, url: req.url, method: req.method, body }));
-        });
-    });
-}
-// AoP mounted in the same order as server.js.
-async function withAop(fn) {
-    const app = express();
-    app.use(appHosts.appHostProxy({ cfg: appHosts.appsConfig(), lookup: core.getGraphicsAppByLabel, log: quiet }));
-    app.use(express.json());
-    app.get('/', (req, res) => res.send('pagina do AoP'));
-    app.post('/eco', (req, res) => res.json({ aop: true, body: req.body }));
-    app.use('/graphicsAppProxy', appHosts.legacyGraphicsRedirect({ getApp: core.getGraphicsApp, log: quiet }));
-    const server = await new Promise(r => { const s = app.listen(0, '127.0.0.1', () => r(s)); });
-    try { return await fn(server.address().port); }
-    finally { await close(server); }
-}
+// --- origins ----------------------------------------------------------------
+const CFG = { domain: 'apps.localhost', port: 8080, proxyPort: 8081 };
 
-// --- label, origin, Host -----------------------------------------------------
-test('appsConfig: padrao apps.localhost e porta PORT ou 8080; valor invalido lanca erro', () => {
-    assert.deepEqual({ ...appHosts.appsConfig({}) }, { domain: 'apps.localhost', port: 8080 });
-    assert.deepEqual({ ...appHosts.appsConfig({ PORT: '8099' }) }, { domain: 'apps.localhost', port: 8099 });
-    assert.deepEqual({ ...appHosts.appsConfig({ PORT: '8099', AOP_PUBLIC_PORT: '18080' }) }, { domain: 'apps.localhost', port: 18080 });
-    assert.deepEqual({ ...appHosts.appsConfig({ APPS_DOMAIN: ' .Apps.TV30.lan. ' }) }, { domain: 'apps.tv30.lan', port: 8080 });
+test('appsConfig: padrao apps.localhost, porta PORT ou 8080 e 8081 da comporta; valor invalido lanca erro', () => {
+    assert.deepEqual({ ...appHosts.appsConfig({}) }, CFG);
+    assert.deepEqual({ ...appHosts.appsConfig({ PORT: '8099' }) }, { ...CFG, port: 8099 });
+    assert.deepEqual({ ...appHosts.appsConfig({ PORT: '8099', AOP_PUBLIC_PORT: '18080' }) }, { ...CFG, port: 18080 });
+    assert.deepEqual({ ...appHosts.appsConfig({ OBJECT_PROXY_PUBLIC_PORT: '18081' }) }, { ...CFG, proxyPort: 18081 });
+    assert.deepEqual({ ...appHosts.appsConfig({ APPS_DOMAIN: ' .Apps.TV30.lan. ' }) }, { ...CFG, domain: 'apps.tv30.lan' });
     assert.throws(() => appHosts.appsConfig({ APPS_DOMAIN: 'apps_tv.lan' }), /APPS_DOMAIN invalido/);
     assert.throws(() => appHosts.appsConfig({ APPS_DOMAIN: 'a..b' }), /APPS_DOMAIN invalido/);
     assert.throws(() => appHosts.appsConfig({ AOP_PUBLIC_PORT: '80a' }), /AOP_PUBLIC_PORT invalida/);
-    assert.throws(() => appHosts.appsConfig({ AOP_PUBLIC_PORT: '70000' }), /AOP_PUBLIC_PORT invalida/);
+    assert.throws(() => appHosts.appsConfig({ OBJECT_PROXY_PUBLIC_PORT: '70000' }), /OBJECT_PROXY_PUBLIC_PORT invalida/);
 });
 
-test('appLabel: rotulo DNS valido (minusculas, [a-z0-9-], ate 63) derivado do identificador', () => {
-    const valid = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-    assert.equal(appHosts.appLabel('urn:tv30:app:Ab12cd'), 'urn-tv30-app-ab12cd');
-    assert.equal(appHosts.appLabel('urn:tv30:service:users-test'), 'urn-tv30-service-users-test');
-    assert.equal(appHosts.appLabel('  Programação__Ao vivo!  '), 'programacao-ao-vivo');
-    const long = `urn:tv30:app:${'x'.repeat(80)}`;
-    const l1 = appHosts.appLabel(long);
-    assert.ok(l1.length <= 63 && valid.test(l1), l1);
-    assert.notEqual(l1, appHosts.appLabel(`${long}y`), 'identificadores longos distintos dao rotulos distintos');
-    assert.equal(appHosts.appLabel('Ação'), 'acao');
-    for (const id of ['', ':::', undefined, null, '日本']) {
-        const l = appHosts.appLabel(id);
-        assert.ok(valid.test(l) && l.startsWith('app-'), `${id} -> ${l}`);
-    }
+test('contextLabel e contextOrigin: ctx- e 16 hexadecimais do SHA-256 do appContextId (5.4), na porta da comporta', () => {
+    const label = appHosts.contextLabel('urn:sbtvd:app:1002:carrossel');
+    assert.match(label, /^ctx-[0-9a-f]{16}$/);
+    assert.equal(label, `ctx-${crypto.createHash('sha256').update('urn:sbtvd:app:1002:carrossel').digest('hex').slice(0, 16)}`);
+    assert.notEqual(label, appHosts.contextLabel('urn:sbtvd:app:1002:outra'));
+    assert.equal(appHosts.contextOrigin('urn:a', CFG), `http://${appHosts.contextLabel('urn:a')}.apps.localhost:8081`);
+    assert.equal(appHosts.contextOrigin('urn:a', { ...CFG, proxyPort: 80 }), `http://${appHosts.contextLabel('urn:a')}.apps.localhost`);
+    assert.equal(appHosts.serviceProxyBase(1002, CFG), 'http://apps.localhost:8081/svc/1002');
 });
 
-test('appOrigin e entryUrl: como o navegador escreve o Origin (porta 80 omitida); a URL leva /graphicsAppProxy', () => {
-    assert.equal(appHosts.appOrigin('x', { domain: 'apps.localhost', port: 8080 }), 'http://x.apps.localhost:8080');
-    assert.equal(appHosts.appOrigin('x', { domain: 'apps.tv.lan', port: 80 }), 'http://x.apps.tv.lan');
-    assert.equal(appHosts.entryUrl('http://x.apps.localhost:8080', '/users-test'), 'http://x.apps.localhost:8080/graphicsAppProxy/users-test');
-    assert.equal(appHosts.entryUrl('http://x.apps.localhost:8080', 'index.html'), 'http://x.apps.localhost:8080/graphicsAppProxy/index.html');
-    assert.equal(appHosts.entryUrl('http://x.apps.localhost:8080', ''), 'http://x.apps.localhost:8080/graphicsAppProxy/');
-});
-
-test('stripPrefix: tira /graphicsAppProxy so quando ele e um segmento inteiro', () => {
-    assert.equal(appHosts.stripPrefix('/graphicsAppProxy/users-test?x=1'), '/users-test?x=1');
-    assert.equal(appHosts.stripPrefix('/graphicsAppProxy'), '/');
-    assert.equal(appHosts.stripPrefix('/graphicsAppProxy?x=1'), '/?x=1');
-    assert.equal(appHosts.stripPrefix('/graphicsAppProxyX/a'), '/graphicsAppProxyX/a');
-    assert.equal(appHosts.stripPrefix('/js/navigation.js'), '/js/navigation.js');
-    assert.equal(appHosts.describeApp('urn:a', 'nao-e-url', { domain: 'apps.localhost', port: 8080 }), null);
-    assert.equal(appHosts.describeApp('urn:a', 'ftp://bcast/x', { domain: 'apps.localhost', port: 8080 }), null);
+test('broadcastLaunch e broadbandLaunch: origem e URL de entrada; bband que nao e URL HTTP absoluta da null', () => {
+    const origin = appHosts.contextOrigin('urn:a', CFG);
+    assert.deepEqual(appHosts.broadcastLaunch('urn:a', 'index.html', CFG), { origin, url: `${origin}/index.html` });
+    assert.deepEqual(appHosts.broadbandLaunch('http://localhost:8082/services/1001/app/index.html'),
+        { origin: 'http://localhost:8082', url: 'http://localhost:8082/services/1001/app/index.html' });
+    assert.equal(appHosts.broadbandLaunch('nao-e-url'), null);
+    assert.equal(appHosts.broadbandLaunch('ftp://bcast/x'), null);
 });
 
 test('hostLabel: so o que esta no dominio das aplicacoes; porta e caixa nao importam', () => {
@@ -292,28 +234,40 @@ test('remocao do perfil corrente: aop/currentUser vazio (retido), aop/removedUse
 
 const SID = 'urn:tv30:service:users-test';
 const SERVICE_ID = 1001;
+const CONTEXT = 'urn:tv30:appcontext:ctx1';
+const CONTEXT_ORIGIN = appHosts.contextOrigin(CONTEXT, CFG);
 const BALD = { EntryPackage: [{
-    appContextId: 'urn:tv30:appcontext:ctx1',
+    appContextId: CONTEXT,
     appId: 'urn:tv30:app:k1a2b3',
     appName: 'Trocar Usuario',
     appType: 'TV30-Ginga-HTML5',
-    bcastEntryPackageUrl: 'http://bcast:8081',
-    bcastEntryPointUrl: '/users-test',
+    bcastEntryPackageUrl: 'app.pkg',
+    bcastEntryPointUrl: 'index.html',
     controlCode: 'AUTOSTART',
 }] };
+const app = (name) => ({ appId: `urn:tv30:app:${name}`, origin: `http://${name}.apps.localhost:8081`,
+    url: `http://${name}.apps.localhost:8081/index.html` });
 
-test('lancamento pela BALD: registra a origem PROPRIA da aplicacao (nao o alvo do proxy) e a camada grafica abre nela', async () => {
+test('lancamento pela BALD: abre na origem do appContextId e registra essa origem como associada', async () => {
     await core.setCurrentService(SID);
     fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(BALD)));
     await bootstrap.fullscreen();
+    assert.deepEqual(origins(), { [CONTEXT_ORIGIN]: SID });
+    assert.equal(lastGraphics(), `${CONTEXT_ORIGIN}/index.html`);
+});
 
-    const origin = 'http://urn-tv30-app-k1a2b3.apps.localhost:8080';
-    assert.deepEqual(origins(), { [origin]: SID });
-    assert.equal(lastGraphics(), `${origin}/graphicsAppProxy/users-test`);
-    assert.equal(core.getGraphicsAppByLabel('urn-tv30-app-k1a2b3').target, 'http://bcast:8081');
-    assert.equal(core.getGraphicsAppByLabel('outra'), null);
-    // Target of the redirection of /graphicsAppProxy.
-    assert.equal(core.getGraphicsApp().origin, origin);
+test('com os dois pontos de entrada, o de banda larga primeiro (10.1); bband invalido cai no de radiodifusao', async () => {
+    const both = { EntryPackage: [{ ...BALD.EntryPackage[0], bbandEntryPointUrl: 'http://localhost:8082/services/1001/app/index.html' }] };
+    fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(both)));
+    await bootstrap.fullscreen();
+    assert.deepEqual(origins(), { 'http://localhost:8082': SID });
+    assert.equal(lastGraphics(), 'http://localhost:8082/services/1001/app/index.html');
+
+    const invalid = { EntryPackage: [{ ...BALD.EntryPackage[0], bbandEntryPointUrl: 'nao-e-url' }] };
+    fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(invalid)));
+    await bootstrap.fullscreen();
+    assert.deepEqual(origins(), { [CONTEXT_ORIGIN]: SID });
+    fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(BALD)));
 });
 
 test('SLS do servico corrente: a MPD (XML) e os demais fragmentos nao sao lidos aqui; BALD que nao e JSON vai ao log, sem derrubar', () => {
@@ -333,25 +287,25 @@ test('SLS do servico corrente: a MPD (XML) e os demais fragmentos nao sao lidos 
 });
 
 test('troca de aplicacao: remove a origem anterior e registra a nova; relancar a mesma nao a remove', async () => {
-    await core.setDisplayGraphics('http://bcast:8081', '/webmedia', 'urn:tv30:app:w9');
-    assert.deepEqual(origins(), { 'http://urn-tv30-app-w9.apps.localhost:8080': SID });
-    assert.equal(lastGraphics(), 'http://urn-tv30-app-w9.apps.localhost:8080/graphicsAppProxy/webmedia');
+    await core.setDisplayGraphics(app('w9'));
+    assert.deepEqual(origins(), { 'http://w9.apps.localhost:8081': SID });
+    assert.equal(lastGraphics(), 'http://w9.apps.localhost:8081/index.html');
 
     writes.length = 0;
-    await core.setDisplayGraphics('http://bcast:8081', '/webmedia', 'urn:tv30:app:w9');
+    await core.setDisplayGraphics(app('w9'));
     assert.deepEqual(writes.filter(w => w[1] === 'tv30_origin_remove'), []);
-    assert.deepEqual(origins(), { 'http://urn-tv30-app-w9.apps.localhost:8080': SID });
+    assert.deepEqual(origins(), { 'http://w9.apps.localhost:8081': SID });
 });
 
 test('registro e remocao da origem saem pelas funcoes do Redis (tv30_origin_*), na ordem remove-registra', async () => {
     writes.length = 0;
-    await core.setDisplayGraphics('http://bcast:8081', '/x', 'urn:tv30:app:p4');
-    await core.setDisplayGraphics('http://bcast:8081', '/y', 'urn:tv30:app:p5');
+    await core.setDisplayGraphics(app('p4'));
+    await core.setDisplayGraphics(app('p5'));
     assert.deepEqual(writes, [
-        ['FCALL', 'tv30_origin_remove', 'http://urn-tv30-app-w9.apps.localhost:8080'],
-        ['FCALL', 'tv30_origin_register', 'http://urn-tv30-app-p4.apps.localhost:8080', SID],
-        ['FCALL', 'tv30_origin_remove', 'http://urn-tv30-app-p4.apps.localhost:8080'],
-        ['FCALL', 'tv30_origin_register', 'http://urn-tv30-app-p5.apps.localhost:8080', SID],
+        ['FCALL', 'tv30_origin_remove', 'http://w9.apps.localhost:8081'],
+        ['FCALL', 'tv30_origin_register', 'http://p4.apps.localhost:8081', SID],
+        ['FCALL', 'tv30_origin_remove', 'http://p4.apps.localhost:8081'],
+        ['FCALL', 'tv30_origin_register', 'http://p5.apps.localhost:8081', SID],
     ]);
 });
 
@@ -360,11 +314,11 @@ test('estado da aplicacao: started ao abrir, ended antes de started na troca, en
     await core.setDisplayGraphics();
     const n0 = published.length;
     const states = () => published.slice(n0).filter(([t]) => t === STATE).map(([, m, ret]) => ({ ...JSON.parse(m), retained: ret }));
-    await core.setDisplayGraphics('http://bcast:8081', '/x', 'urn:tv30:app:s1');
-    await core.setDisplayGraphics('http://bcast:8081', '/y', 'urn:tv30:app:s2');
+    await core.setDisplayGraphics(app('s1'));
+    await core.setDisplayGraphics(app('s2'));
     await core.setDisplayGraphics();
-    const o1 = 'http://urn-tv30-app-s1.apps.localhost:8080';
-    const o2 = 'http://urn-tv30-app-s2.apps.localhost:8080';
+    const o1 = 'http://s1.apps.localhost:8081';
+    const o2 = 'http://s2.apps.localhost:8081';
     assert.deepEqual(states(), [
         { serviceContextId: SID, appId: 'urn:tv30:app:s1', origin: o1, state: 'started', retained: false },
         { serviceContextId: SID, appId: 'urn:tv30:app:s1', origin: o1, state: 'ended', retained: false },
@@ -377,26 +331,21 @@ test('registro recusado pela funcao (esquema): o lancamento rejeita com a mensag
     const msg = 'TV30SCHEMA tv30_origin_register: origins:associated field name: host must be in lowercase';
     recusa = ['tv30_origin_register', msg];
     try {
-        await assert.rejects(core.setDisplayGraphics('http://bcast:8081', '/x', 'urn:tv30:app:q'), { message: msg });
+        await assert.rejects(core.setDisplayGraphics(app('q')), { message: msg });
     } finally { recusa = null; }
-    await core.setDisplayGraphics('http://bcast:8081', '/y', 'urn:tv30:app:p5');
-});
-
-test('sem appId: o rotulo sai do id do servico corrente', async () => {
-    await core.setDisplayGraphics('http://bcast:8081', '/uff');
-    assert.deepEqual(origins(), { 'http://urn-tv30-service-users-test.apps.localhost:8080': SID });
+    await core.setDisplayGraphics(app('p5'));
 });
 
 test('encerramento (tecla de saida): remove a origem e esvazia a camada grafica', async () => {
     await core.openServiceInfo();
     assert.deepEqual(origins(), {});
     assert.equal(lastGraphics(), '');
-    assert.equal(core.getGraphicsAppByLabel('urn-tv30-service-users-test'), null);
-    assert.equal(core.getGraphicsApp(), null);
 });
 
-test('bcastEntryPackageUrl invalido: nada registrado nem aberto', async () => {
-    await core.setDisplayGraphics('bcast:8081', '/x', 'urn:tv30:app:z');
+test('BALD sem ponto de entrada utilizavel: nada registrado nem aberto', async () => {
+    const without = { EntryPackage: [{ ...BALD.EntryPackage[0], bcastEntryPointUrl: undefined, bbandEntryPointUrl: 'ftp://x/y' }] };
+    fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(without)));
+    await bootstrap.fullscreen();
     assert.deepEqual(origins(), {});
     assert.equal(lastGraphics(), '');
 });
@@ -404,111 +353,11 @@ test('bcastEntryPackageUrl invalido: nada registrado nem aberto', async () => {
 test('Redis fora do ar: o lancamento rejeita (rota HTTP responde 404 {error:200})', async () => {
     down = true;
     try {
-        await assert.rejects(core.setDisplayGraphics('http://bcast:8081', '/x', 'urn:tv30:app:r'), { message: FAIL });
+        await assert.rejects(core.setDisplayGraphics(app('r')), { message: FAIL });
     } finally { down = false; }
     // Clears the state (the origin was never written).
     await core.setDisplayGraphics();
     assert.deepEqual(origins(), {});
-});
-
-// --- routing by Host ---------------------------------------------------------
-test('host da aplicacao vai ao proxy dela, com corpo intacto; outros hosts seguem para o AoP', async () => {
-    const bcast = await fakeBcast();
-    const target = `http://127.0.0.1:${bcast.address().port}`;
-    try {
-        await core.setDisplayGraphics(target, '/users-test', 'urn:tv30:app:h1');
-        const host = 'urn-tv30-app-h1.apps.localhost:8080';
-        await withAop(async port => {
-            let r = await request(port, { host, path: '/users-test?x=1' });
-            assert.equal(r.status, 200);
-            let j = JSON.parse(r.body);
-            assert.equal(j.bcast, true);
-            assert.equal(j.url, '/users-test?x=1');
-            // changeOrigin
-            assert.equal(j.host, `127.0.0.1:${bcast.address().port}`);
-
-            // The root belongs to the application, not to the AoP page.
-            r = await request(port, { host, path: '/' });
-            assert.equal(JSON.parse(r.body).url, '/');
-
-            // /graphicsAppProxy prefix: optional on the application host; with
-            // it, it is removed from the path that goes to the target.
-            r = await request(port, { host, path: '/graphicsAppProxy/users-test?x=1' });
-            assert.equal(r.status, 200);
-            assert.equal(JSON.parse(r.body).url, '/users-test?x=1');
-            // A request from the root: a file of the application.
-            r = await request(port, { host, path: '/js/navigation.js' });
-            assert.equal(JSON.parse(r.body).url, '/js/navigation.js');
-
-            r = await request(port, { host, method: 'POST', path: '/eco', body: '{"a":1}' });
-            j = JSON.parse(r.body);
-            assert.equal(j.bcast, true);
-            assert.equal(j.body, '{"a":1}');
-
-            for (const h of ['outra.apps.localhost:8080', 'a.urn-tv30-app-h1.apps.localhost:8080']) {
-                r = await request(port, { host: h, path: '/users-test' });
-                assert.equal(r.status, 404, h);
-                assert.match(r.body, /nenhuma aplicacao em execucao/);
-            }
-
-            for (const h of ['localhost:8080', 'apps.localhost:8080', '127.0.0.1:8080']) {
-                r = await request(port, { host: h, path: '/' });
-                assert.equal(r.body, 'pagina do AoP', h);
-            }
-            r = await request(port, { host: 'localhost:8080', method: 'POST', path: '/eco', body: '{"a":1}' });
-            assert.deepEqual(JSON.parse(r.body), { aop: true, body: { a: 1 } });
-
-            // Ends it.
-            await core.setDisplayGraphics();
-            r = await request(port, { host, path: '/users-test' });
-            assert.equal(r.status, 404);
-        });
-    } finally { await close(bcast); }
-});
-
-test('/graphicsAppProxy no host do AoP: 302 para o host da aplicacao, sem gravar origem', async () => {
-    const bcast = await fakeBcast();
-    try {
-        await core.setDisplayGraphics(`http://127.0.0.1:${bcast.address().port}`, '/users-test', 'urn:tv30:app:l1');
-        const before = origins();
-        writes.length = 0;
-        await withAop(async port => {
-            let r = await request(port, { host: 'localhost:8080', path: '/graphicsAppProxy/users-test?x=1' });
-            assert.equal(r.status, 302);
-            assert.equal(r.location, 'http://urn-tv30-app-l1.apps.localhost:8080/graphicsAppProxy/users-test?x=1');
-            r = await request(port, { host: 'localhost:8080', path: '/graphicsAppProxy' });
-            assert.equal(r.status, 302);
-            assert.equal(r.location, 'http://urn-tv30-app-l1.apps.localhost:8080/graphicsAppProxy/');
-        });
-        assert.deepEqual(writes, []);
-        assert.deepEqual(origins(), before);
-        assert.equal(Object.keys(before).length, 1);
-        assert.ok(!Object.keys(before).some(o => o.includes('127.0.0.1')), 'o alvo do proxy nao e registrado');
-    } finally {
-        await core.setDisplayGraphics();
-        await close(bcast);
-    }
-});
-
-test('aplicacao fora do ar: host dela responde 502; sem aplicacao, /graphicsAppProxy no host do AoP responde 404', async () => {
-    const bcast = await fakeBcast();
-    const port0 = bcast.address().port;
-    // Closed port.
-    await close(bcast);
-    try {
-        await core.setDisplayGraphics(`http://127.0.0.1:${port0}`, '/users-test', 'urn:tv30:app:d1');
-        await withAop(async port => {
-            let r = await request(port, { host: 'urn-tv30-app-d1.apps.localhost:8080', path: '/users-test' });
-            assert.equal(r.status, 502);
-            r = await request(port, { host: 'urn-tv30-app-d1.apps.localhost:8080', path: '/graphicsAppProxy/users-test' });
-            assert.equal(r.status, 502);
-            // Ends it.
-            await core.setDisplayGraphics();
-            r = await request(port, { host: 'localhost:8080', path: '/graphicsAppProxy/users-test' });
-            assert.equal(r.status, 404);
-            assert.match(r.body, /nenhuma aplicacao em execucao/);
-        });
-    } finally { await core.setDisplayGraphics(); }
 });
 
 test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava services:announced e publica aop/services retido; o servico corrente vem do catalogo, com o serviceId do SLS', async () => {
@@ -531,6 +380,12 @@ test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava service
     assert.equal(core.getCurrentService().bam.appName, 'Users');
     assert.equal(core.getCurrentService().serviceId, SERVICE_ID);
     assert.equal(subscribed.at(-1), `tlm/sls/${SERVICE_ID}/#`);
+    // The tuning (5.2), retained: the service, its RF channel and the instant.
+    const tuned = published.filter(([t]) => t === 'tlm/tuned').at(-1);
+    assert.equal(tuned[2], true);
+    const tuning = JSON.parse(tuned[1]);
+    assert.deepEqual({ serviceId: tuning.serviceId, rfChannelId: tuning.rfChannelId }, { serviceId: SERVICE_ID, rfChannelId: 10 });
+    assert.ok(!Number.isNaN(Date.parse(tuning.tunedAt)));
     // BAMT removed from a channel still detected: the service leaves the
     // catalog.
     fakeMqtt.emit('message', 'tlm/lls/10/bamt', Buffer.from(''));
@@ -539,5 +394,6 @@ test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava service
     assert.equal(store.get('services:announced').size, 0);
     core.unsetCurrentService();
     assert.equal(unsubscribed.at(-1), `tlm/sls/${SERVICE_ID}/#`);
+    assert.deepEqual(published.filter(([t]) => t === 'tlm/tuned').at(-1), ['tlm/tuned', '', true]);
     fakeMqtt.emit('message', 'tlm/lls/10/slt', Buffer.from(''));
 });

@@ -1,9 +1,8 @@
-// HTTP server of the AoP: the platform pages and routes, the application
-// hosts and the MQTT over WebSocket of the TV page.
+// HTTP server of the AoP: the platform pages and routes and the MQTT over
+// WebSocket of the TV page.
 const { PORT, APPS, MQTT_WS } = require('./environment');
 const express = require('express');
 const logger = require('./logger');
-const appHosts = require('./app-hosts');
 const mqttWs = require('./mqtt-ws');
 const core = require('./core');
 const { platformErrorHandler } = require('./http-error');
@@ -14,8 +13,6 @@ const applicationCatalog = require('./modules/application-catalog');
 const bootstrapApplication = require('./modules/bootstrap-application');
 const dashStreams = require('./modules/dash-streams');
 
-const HTTP_PORT_DEFAULT = 80;
-
 function corsHeaders(req, res, next) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
@@ -23,19 +20,7 @@ function corsHeaders(req, res, next) {
     next();
 }
 
-function appsAddress() {
-    const port = APPS.port === HTTP_PORT_DEFAULT ? '' : `:${APPS.port}`;
-    return `http://<app>.${APPS.domain}${port}`;
-}
-
 const app = express();
-
-// An application host (<label>.<APPS_DOMAIN>) goes to the proxy of the
-// running application; without one, 404. Mounted first: an application host
-// never serves the pages or the files of the AoP, and the body reaches the
-// target intact.
-app.use(appHosts.appHostProxy({ cfg: APPS, lookup: core.getGraphicsAppByLabel }));
-logger.info(`[apps] aplicacoes de emissora em ${appsAddress()}`);
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -50,10 +35,6 @@ app.use(core.GUI.app_catalogue, applicationCatalog);
 app.use(core.GUI.bootstrap_app, bootstrapApplication);
 app.use(dashStreams.ROUTE, dashStreams.router);
 app.use('/', graphicOverlays);
-
-// /graphicsAppProxy on the host of the AoP: 302 to the same path on the
-// host of the running application; without one, 404 (./app-hosts.js).
-app.use('/graphicsAppProxy', appHosts.legacyGraphicsRedirect({ getApp: core.getGraphicsApp }));
 
 // An exception in a route (e.g. Redis down) becomes 404 {error:200} (C.3.2).
 app.use(platformErrorHandler);

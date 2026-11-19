@@ -45,7 +45,7 @@ function reset(configuration = 'Broadband', bam = {}) {
     played.length = 0;
     logs.length = 0;
     entry = { serviceContextId: 'urn:s:1001', serviceId: 1001, bsid: 10, configuration, bam };
-    dash.select(1001, configuration);
+    dash.select(1001);
 }
 
 // --- aop-dash-streams --------------------------------------------------------
@@ -59,19 +59,18 @@ test('Broadband: a MPD com MPD.BaseURL absoluto e servida; BaseURL sem / final g
     assert.match(served, /<BaseURL>video\/<\/BaseURL>/);
 });
 
-test('MPD.BaseURL relativo, ausente ou configuracao Broadcast: recusada, com log so quando o motivo muda', () => {
-    reset();
-    dash.receive('1001', mpdOf('/aovivo/'));
-    dash.receive('1001', mpdOf('/aovivo/'));
-    assert.equal(dash.mediaUrl(1001), undefined);
-    assert.equal(logs.filter((l) => l.includes('is not absolute')).length, 1);
-    dash.receive('1001', '<MPD><Period/></MPD>');
-    assert.ok(logs.some((l) => l.includes('no MPD.BaseURL')));
-
+test('MPD.BaseURL relativo: vai depois da base da comporta do servico, por concatenacao (5.4); ausente: recusada, com log', () => {
     reset('Broadcast');
-    dash.receive('1001', mpdOf(LIVE));
+    dash.receive('1001', mpdOf('/live/'));
+    assert.equal(dash.mediaUrl(1001), '/dash/1001/mpd');
+    const served = require('../src/modules/dash-streams/service').mpd('1001');
+    assert.match(served, /<BaseURL>http:\/\/apps\.localhost:8081\/svc\/1001\/live\/<\/BaseURL>/);
+    assert.match(served, /<BaseURL>video\/<\/BaseURL>/);
+
+    dash.receive('1001', '<MPD><Period/></MPD>');
+    dash.receive('1001', '<MPD><Period/></MPD>');
     assert.equal(dash.mediaUrl(1001), undefined);
-    assert.ok(logs.some((l) => l.includes('configuration Broadcast')));
+    assert.equal(logs.filter((l) => l.includes('no MPD.BaseURL')).length, 1);
 });
 
 test('so a MPD do servico corrente; mensagem vazia a tira; clear esquece o servico', () => {
