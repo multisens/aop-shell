@@ -2,26 +2,16 @@ require('dotenv').config();
 const mqtt = require('mqtt');
 const logger = require('./logger');
 const redis = require('./redis-client');
-const redisFunctions = require('./redis-functions');
-const { whenReady } = require('./redis-options');
 const profiles = require('./modules/profile-manager/service');
 const lls = require('./modules/transport-layer-metadata-lls');
 const catalog = require('./modules/application-catalog/catalog');
 const dashStreams = require('./modules/dash-streams');
 
-// origins:associated: origin of the running application (the one the
-// browser sends in the Origin of its calls, not the proxy target) to the
-// current globalServiceId. Cleared at boot.
-const ORIGINS_KEY = 'origins:associated';
-
 const MQTT_CLIENT_ID = 'aop-core';
 const MQTT_CONNECT_TIMEOUT_MS = 4000;
 const USER_LOAD_ATTEMPTS = 5;
 const USER_LOAD_STEP_MS = 2000;
-const BALD_FRAGMENT = 'bald';
 const MPD_FRAGMENT = 'mpd';
-const OBJECT_AVAILABLE = 'available';
-const OBJECT_EXPIRED = 'expired';
 // SLT Service@configuration when absent.
 const DEFAULT_CONFIGURATION = 'Broadcast';
 
@@ -37,13 +27,13 @@ const TOPICS = {
     removed_user: 'aop/removedUser',
     current_service: 'aop/currentService',
     sls_metadata: 'tlm/sls/+/#',
-    object_events: 'tlm/object/+/+',
     gui_layer: 'aop/display/layers/rxgui',
     pmplayer_url: 'aop/display/layers/video/url',
     pmplayer_size: 'aop/display/layers/video/size',
     graphics_layer: 'aop/display/layers/graphics',
     tuned: 'tlm/tuned',
-    application_state: 'aop/application-lifecycle-manager/application-state',
+    graphics_application: 'aop/application-lifecycle-manager/graphics-application',
+    end_request: 'aop/application-lifecycle-manager/end-request',
 };
 
 const DATA = {
@@ -51,8 +41,9 @@ const DATA = {
         current: '',
         previous: '',
     },
-    // Application in the graphics layer: { appId, origin, url,
-    // serviceContextId } or null.
+    // Application in the graphics layer, as aop-application-lifecycle-manager
+    // publishes it: { serviceContextId, appId, origin, url }, or null for
+    // the Bootstrap Application.
     graphicsApp: null,
     currentUser: '',
     users: [],
@@ -63,11 +54,6 @@ const DATA = {
     currentService: '',
     currentEntry: undefined,
     serviceMetadata: {},
-    // contentLocation of each object of the carousel of the current service
-    // available now, by the object events of the proxy since the tuning; and
-    // the launches waiting for one: { location, resolve }.
-    availableObjects: new Set(),
-    objectWaiters: [],
 };
 
 // Handler of each subscribed topic filter.
@@ -76,6 +62,7 @@ const handlers = new Map([
     [TOPICS.current_service, loadCurrentService],
     [lls.TOPIC, lls.receive],
     [catalog.SCAN_TOPIC, catalog.receiveScan],
+    [TOPICS.graphics_application, loadGraphicsApplication],
 ]);
 
 const client = mqtt.connect(`mqtt://${process.env.MQTT_HOST}`, {
@@ -88,32 +75,6 @@ function setDisplayGui(screen) {
     client.publish(TOPICS.gui_layer, screen);
     DATA.rxgui.previous = DATA.rxgui.current;
     DATA.rxgui.current = screen;
-}
-
-// app = { appId, origin, url } of the application to open (origin is the
-// one the browser sends in the Origin of its calls), or null to end the
-// application. Publishes at once; the promise is the one of the
-// registration of the associated origin.
-async function setDisplayGraphics(app = null) {
-    const pending = [];
-    const previous = DATA.graphicsApp;
-    if (previous && (!app || previous.origin !== app.origin)) {
-        pending.push(unregisterAssociatedOrigin(previous.origin));
-    }
-    if (app) {
-        pending.push(registerAssociatedOrigin(app.origin));
-    }
-
-    // The application that leaves ends before the one that enters starts.
-    if (previous) {
-        publishApplicationState(previous, 'ended');
-    }
-    DATA.graphicsApp = app ? { ...app, serviceContextId: DATA.currentService } : null;
-    if (DATA.graphicsApp && DATA.graphicsApp.serviceContextId) {
-        publishApplicationState(DATA.graphicsApp, 'started');
-    }
-    client.publish(TOPICS.graphics_layer, app ? app.url : '');
-    await Promise.all(pending);
 }
 
 // The media source of the Persistent Media Player; empty stops it.
@@ -166,7 +127,6 @@ function getUserList() {
 // failure rejects, with the service already published.
 async function setCurrentService(sid) {
     const tunedAt = new Date();
-    forgetObjects();
     DATA.currentService = sid.toString();
     DATA.currentEntry = undefined;
     client.publish(TOPICS.current_service, sid.toString(), { retain: true });
@@ -181,16 +141,13 @@ async function setCurrentService(sid) {
     }
     dashStreams.select(entry.serviceId);
     client.subscribe(slsFilter(entry.serviceId), { noLocal: true });
-    client.subscribe(objectFilter(entry.serviceId), { noLocal: true });
     publishTuning(entry, tunedAt);
 }
 
 function unsetCurrentService() {
     if (DATA.currentEntry) {
         client.unsubscribe(slsFilter(DATA.currentEntry.serviceId), { noLocal: true });
-        client.unsubscribe(objectFilter(DATA.currentEntry.serviceId), { noLocal: true });
     }
-    forgetObjects();
     client.publish(TOPICS.current_service, '', { retain: true });
     client.publish(TOPICS.tuned, '', { retain: true });
     DATA.currentService = '';
@@ -205,35 +162,32 @@ function getCurrentService() {
     return DATA.currentEntry;
 }
 
-// Resolves true when the object of contentLocation of the carousel of the
-// current service is available (at once if it is already), or false when
-// the service is left first.
-function whenObjectAvailable(location) {
-    if (DATA.availableObjects.has(location)) {
-        return Promise.resolve(true);
-    }
-    return new Promise((resolve) => {
-        DATA.objectWaiters.push({ location, resolve });
-    });
+// The broadcaster application in the graphics layer, or null.
+function getGraphicsApp() {
+    return DATA.graphicsApp;
 }
 
 function getServiceSLS() {
     return DATA.serviceMetadata;
 }
 
-function setBALDHandler(handler) {
-    DATA.serviceMetadata.baldHandler = handler;
+// With a broadcaster application in the graphics layer, asks
+// aop-application-lifecycle-manager to end it (the Bootstrap Application
+// returns by loadGraphicsApplication); without one, shows the information
+// of the Bootstrap Application.
+function openServiceInfo() {
+    if (DATA.graphicsApp) {
+        const request = { serviceContextId: DATA.graphicsApp.serviceContextId, appId: DATA.graphicsApp.appId };
+        client.publish(TOPICS.end_request, JSON.stringify(request));
+        return;
+    }
+    if (DATA.rxgui.current === '') {
+        openBootstrapInfo();
+    }
 }
 
-// Returns the promise of the removal of the associated origin.
-function openServiceInfo() {
-    if (DATA.rxgui.current === '') {
-        setDisplayGui(`${GUI.bootstrap_app}?mode=info`);
-    }
-    if (DATA.graphicsApp) {
-        return setDisplayGraphics();
-    }
-    return Promise.resolve();
+function openBootstrapInfo() {
+    setDisplayGui(`${GUI.bootstrap_app}?mode=info`);
 }
 
 // Profiles read directly from storage, all of them, without the visibility
@@ -277,30 +231,11 @@ async function loadUserData(attempt = 1) {
     }
 }
 
-async function registerAssociatedOrigin(origin) {
-    const scid = DATA.currentService;
-    if (!scid) {
-        throw new Error(`no current service: origin ${origin} not registered as associated`);
-    }
-    await redisFunctions.originRegister(origin, scid);
-}
-
-async function unregisterAssociatedOrigin(origin) {
-    await redisFunctions.originRemove(origin);
-}
-
 // tlm/tuned (implementation document, 5.2): the service of the Bootstrap
 // Application instance and the instant it became the current service.
 function publishTuning(entry, tunedAt) {
     const tuning = { serviceId: entry.serviceId, rfChannelId: entry.bsid, tunedAt: tunedAt.toISOString() };
     client.publish(TOPICS.tuned, JSON.stringify(tuning), { retain: true });
-}
-
-// Change of state of the application, for the other components; published
-// here until the Application Lifecycle Manager exists.
-function publishApplicationState(app, state) {
-    const message = { serviceContextId: app.serviceContextId, appId: app.appId, origin: app.origin, state };
-    client.publish(TOPICS.application_state, JSON.stringify(message));
 }
 
 // Writes lastAccess on every change of the current user, including one that
@@ -334,76 +269,42 @@ async function loadCurrentService(message) {
     }
 }
 
-// tlm/object/<serviceId>/{available,expired} (implementation document,
-// 5.6), of the current service only.
-function loadObjectEvent(message, topic) {
-    const [, , serviceId, event] = topic.split('/');
-    if (!DATA.currentEntry || String(DATA.currentEntry.serviceId) !== serviceId) {
-        return;
-    }
-    let location;
-    try {
-        location = JSON.parse(message).contentLocation;
-    } catch (err) {
-        logger.error(`[objects] event of ${topic} ignored: ${err.message}`);
-        return;
-    }
-    switch (event) {
-        case OBJECT_AVAILABLE:
-            DATA.availableObjects.add(location);
-            DATA.objectWaiters = DATA.objectWaiters.filter((waiter) => {
-                if (waiter.location !== location) {
-                    return true;
-                }
-                waiter.resolve(true);
-                return false;
-            });
-            break;
-        case OBJECT_EXPIRED:
-            DATA.availableObjects.delete(location);
-            break;
-        default:
-    }
-}
-
-// The service left: nothing of its carousel is available, and the launches
-// waiting give up.
-function forgetObjects() {
-    DATA.availableObjects = new Set();
-    DATA.objectWaiters.forEach((waiter) => waiter.resolve(false));
-    DATA.objectWaiters = [];
-}
-
-// Of the SLS fragments, the BALD is read here and the MPD goes to
-// aop-dash-streams; the others are left to their consumers.
+// Of the SLS fragments, the MPD goes to aop-dash-streams; the others are
+// left to their consumers.
 function loadSLSMetadata(meta, topic) {
     const parts = topic.split('/');
     const fragment = parts.at(-1);
     if (fragment === MPD_FRAGMENT) {
         dashStreams.receive(parts[2], meta);
-        return;
     }
-    if (fragment !== BALD_FRAGMENT) {
-        return;
-    }
+}
 
-    if (!meta) {
-        DATA.serviceMetadata.bald = undefined;
-        DATA.serviceMetadata.baldHandler = undefined;
+// The application aop-application-lifecycle-manager put in the graphics
+// layer: it replaces the Bootstrap Application, with the video in full
+// screen. Empty: the application ended, and the Bootstrap Application of
+// the tuned service returns in its initial state (BpAFR-08).
+function loadGraphicsApplication(message) {
+    if (!message) {
+        const hadApp = DATA.graphicsApp !== null;
+        DATA.graphicsApp = null;
+        client.publish(TOPICS.graphics_layer, '');
+        if (hadApp && DATA.currentEntry) {
+            openBootstrapInfo();
+        }
         return;
     }
-
-    let content;
+    let app;
     try {
-        content = JSON.parse(meta);
+        app = JSON.parse(message);
     } catch (err) {
-        logger.error(`[sls] BALD of ${topic} ignored: ${err.message}`);
+        logger.error(`[apps] graphics application ignored: ${err.message}`);
         return;
     }
-    DATA.serviceMetadata.bald = content;
-    if (DATA.serviceMetadata.baldHandler) {
-        DATA.serviceMetadata.baldHandler(content);
-    }
+    DATA.graphicsApp = app;
+    setDisplayGui('');
+    setVideoSize();
+    client.publish(TOPICS.graphics_layer, app.url);
+    logger.info(`[apps] ${app.appId} in the graphics layer at ${app.url}`);
 }
 
 // The catalog entry with the configuration of its SLT Service element, or
@@ -423,10 +324,6 @@ function slsFilter(serviceId) {
 }
 
 // tlm/object/<serviceId>/+.
-function objectFilter(serviceId) {
-    return TOPICS.object_events.replace('+', String(serviceId));
-}
-
 function mqttTopicMatch(topic, filter) {
     const levels = filter.split('/').map((level) => {
         if (level === '+') {
@@ -449,7 +346,6 @@ function onConnect() {
     // Topics of the current service: handled here, subscribed by
     // setCurrentService.
     handlers.set(TOPICS.sls_metadata, loadSLSMetadata);
-    handlers.set(TOPICS.object_events, loadObjectEvent);
 
     loadUserData();
 }
@@ -467,7 +363,6 @@ function onMessage(topic, message) {
     logger.info(`no handler for topic ${topic}`);
 }
 
-whenReady(redis, `limpeza de ${ORIGINS_KEY}`, () => redisFunctions.originsClear());
 catalog.start((topic, message) => client.publish(topic, message, { retain: true }));
 client.on('connect', onConnect);
 client.on('message', onMessage);
@@ -475,7 +370,6 @@ client.on('message', onMessage);
 module.exports = {
     GUI,
     setDisplayGui,
-    setDisplayGraphics,
     setVideoURL,
     setVideoSize,
     setCurrentUser,
@@ -487,8 +381,7 @@ module.exports = {
     unsetCurrentService,
     getCurrentService,
     getServiceSLS,
-    whenObjectAvailable,
-    setBALDHandler,
+    getGraphicsApp,
     openServiceInfo,
     loadUserData,
     refreshUserData,

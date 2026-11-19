@@ -34,18 +34,6 @@ async function profileRemove(id) {
     return Number(await fcall('tv30_profile_remove', [id]));
 }
 
-function originRegister(origin, service) {
-    return fcall('tv30_origin_register', [origin, service]);
-}
-
-function originRemove(origin) {
-    return fcall('tv30_origin_remove', [origin]);
-}
-
-function originsClear() {
-    return fcall('tv30_origins_clear', []);
-}
-
 // services:announced rewritten whole with the records of catalog, a Map
 // globalServiceId -> record; an empty catalog deletes it.
 function announcedServices(catalog) {
@@ -76,9 +64,6 @@ module.exports = {
     profileLimitOf,
     profileLastAccess,
     profileRemove,
-    originRegister,
-    originRemove,
-    originsClear,
     announcedServices,
     isSchemaRefusal,
 };

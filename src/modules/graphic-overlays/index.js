@@ -17,16 +17,14 @@ router.get('/ready', (req, res) => {
     res.status(200).send();
 });
 
-router.get('/keydown/:keyCode', async (req, res) => {
+router.get('/keydown/:keyCode', (req, res) => {
     if (!req.params.keyCode) {
         res.status(400).send();
         return;
     }
 
     if (['27', '93'].includes(req.params.keyCode)) {
-        // Waits for the removal of the associated origin; a Redis failure gives
-        // 404 {error:200}.
-        await core.openServiceInfo();
+        core.openServiceInfo();
     }
     else if (req.params.keyCode == '33') {
         console.log('channel +');

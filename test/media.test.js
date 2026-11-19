@@ -21,6 +21,7 @@ const fakeCore = {
     getCurrentService: () => entry,
     setVideoURL: (url = '') => played.push(url),
     setVideoSize() {},
+    getGraphicsApp: () => null,
 };
 const m = new Module(coreFile);
 m.filename = coreFile;

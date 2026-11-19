@@ -52,7 +52,7 @@ const fakeCore = {
     getUserList: () => users,
     getCurrentService: () => services.get(currentService),
     getServiceSLS: () => ({}),
-    unsetCurrentService() {}, setVideoURL() {}, setVideoSize() {}, setDisplayGui() {},
+    unsetCurrentService() {}, setVideoURL() {}, setVideoSize() {}, setDisplayGui() {}, getGraphicsApp: () => null,
     async refreshUserData() {},
 };
 const m = new Module(coreFile); m.filename = coreFile; m.loaded = true; m.exports = fakeCore; require.cache[coreFile] = m;

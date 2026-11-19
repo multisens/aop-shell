@@ -1,6 +1,5 @@
 const core = require('../../core');
 const logger = require('../../logger');
-const appHosts = require('../../app-hosts');
 const dashStreams = require('../dash-streams');
 const { avatarHtml } = require('../profile-manager/avatar');
 const { escapeHtml, svgImageHtml, cssHexColor } = require('../../html');
@@ -14,12 +13,8 @@ const DEFAULT_BACKGROUND_COLOR = '#282828';
 const DEFAULT_FOREGROUND_COLOR = '#c8c8c8';
 const DEFAULT_GENRE_COLOR = 'transparent';
 const INFO_MODE = 'info';
-const HTML5_APP_TYPE = 'TV30-Ginga-HTML5';
-const AUTOSTART = 'AUTOSTART';
 const HTTP_PROTOCOLS = ['http:', 'https:'];
 const MPD_EXTENSION = '.mpd';
-// Origins of the applications, already checked at boot (environment.js).
-const APPS = appHosts.appsConfig();
 const HLS_EXTENSION = '.m3u8';
 
 function profile() {
@@ -28,12 +23,16 @@ function profile() {
 }
 
 // initialMediaURL is the parameter of BpAFR-11, already checked
-// (initialMediaParameter), or undefined.
+// (initialMediaParameter), or undefined. A broadcaster application that
+// already replaced the Bootstrap Application keeps the video in full
+// screen.
 function openBootstrapApp(mode, initialMediaURL) {
     if (mode !== INFO_MODE) {
         playInitialMedia(initialMediaURL);
     }
-    core.setVideoSize('12%', '35%', '60%', '60%');
+    if (core.getGraphicsApp() === null) {
+        core.setVideoSize('12%', '35%', '60%', '60%');
+    }
 }
 
 // The initialMediaURL parameter (BpAFR-11): undefined when absent; an
@@ -141,82 +140,12 @@ function closeBootstrapApp(gui) {
     core.unsetCurrentService();
 }
 
-// Returns the promise of the registration of the associated origin. Without
-// a BALD yet, the start is left to the MQTT handler, which logs a failure.
+// BpAFR-09: the information of the Bootstrap Application is hidden and the
+// video returns to full screen. The broadcaster application is launched by
+// aop-application-lifecycle-manager, by the BALD.
 function fullscreen() {
     core.setDisplayGui('');
     core.setVideoSize();
-    try {
-        return startApp(core.getServiceSLS().bald);
-    } catch (error) {
-        core.setBALDHandler((bald) => {
-            startApp(bald).catch((err) => {
-                logger.error(`[origins] failed to register the origin of the application: ${err.message}`);
-            });
-        });
-        return Promise.resolve();
-    }
-}
-
-// Only HTML5 applications with AUTOSTART, or no controlCode, are started.
-// The BALD is { EntryPackage: [...] }. The promise is the one of the
-// broadband launches; a broadcast launch waits, apart, for its entry point
-// to be available in the carousel.
-function startApp(bald) {
-    const pending = [];
-    for (const entryPackage of bald.EntryPackage) {
-        const autostart = !entryPackage.controlCode || entryPackage.controlCode === AUTOSTART;
-        if (!autostart || entryPackage.appType !== HTML5_APP_TYPE) {
-            continue;
-        }
-        const launch = launchOf(entryPackage);
-        if (launch === null) {
-            logger.error(`[apps] ${entryPackage.appId} not opened: no valid entry point`);
-            continue;
-        }
-        const app = { appId: entryPackage.appId, origin: launch.origin, url: launch.url };
-        if (launch.awaits === null) {
-            pending.push(core.setDisplayGraphics(app));
-            continue;
-        }
-        launchWhenAvailable(app, launch.awaits).catch((err) => {
-            logger.error(`[apps] ${entryPackage.appId} not opened: ${err.message}`);
-        });
-    }
-    return Promise.all(pending);
-}
-
-// Before its first pass after the tuning the object proxy answers 404 to
-// the entry point (implementation document, 5.3): the launch waits for the
-// object event that makes it available. Leaving the service gives up.
-async function launchWhenAvailable(app, entryPoint) {
-    logger.info(`[apps] ${app.appId} waits for ${entryPoint} in the carousel`);
-    const available = await core.whenObjectAvailable(entryPoint);
-    if (!available) {
-        logger.info(`[apps] ${app.appId} not opened: the service was left before ${entryPoint} passed`);
-        return;
-    }
-    await core.setDisplayGraphics(app);
-    logger.info(`[apps] ${app.appId} opened at ${app.url}`);
-}
-
-// ABNT NBR 25608, 10.1: with both entry points, the broadband one first;
-// the broadcast one opens on the origin of the Application Context ID
-// (implementation document, 5.4) and awaits its entry point. Null without a
-// usable entry point.
-function launchOf(entryPackage) {
-    if (entryPackage.bbandEntryPointUrl !== undefined) {
-        const broadband = appHosts.broadbandLaunch(entryPackage.bbandEntryPointUrl);
-        if (broadband !== null) {
-            return { ...broadband, awaits: null };
-        }
-        logger.error(`[apps] bbandEntryPointUrl '${entryPackage.bbandEntryPointUrl}' is not an absolute HTTP URL`);
-    }
-    if (entryPackage.bcastEntryPointUrl !== undefined) {
-        const broadcast = appHosts.broadcastLaunch(entryPackage.appContextId, entryPackage.bcastEntryPointUrl, APPS);
-        return { ...broadcast, awaits: entryPackage.bcastEntryPointUrl };
-    }
-    return null;
 }
 
 function isHlsPlaylist(url) {
