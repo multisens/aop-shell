@@ -1,7 +1,8 @@
 // Media source of the page of the TV (public/js/display.js), in a vm context
-// with doubles of jQuery, video.js and fetch: HLS goes to the player only
-// with #EXT-X-MAP in every media playlist (ABNT NBR 25602, Annex C); a new
-// source replaces the one of the player already created.
+// with doubles of jQuery, video.js, dash.js and fetch: DASH goes to dash.js
+// and HLS to video.js, only with #EXT-X-MAP in every media playlist (ABNT
+// NBR 25602, Annex C); a new source replaces the one of the player already
+// created.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -52,6 +53,22 @@ function page(files) {
         players.push(player);
         return player;
     }
+    const dashPlayers = [];
+    const dashjs = {
+        MediaPlayer: Object.assign(() => ({
+            create() {
+                const dash = {
+                    sources: [],
+                    initialize(element, url) { dash.sources.push(url); },
+                    attachSource(url) { dash.sources.push(url); },
+                    on() {},
+                    destroy() { dash.destroyed = true; },
+                };
+                dashPlayers.push(dash);
+                return dash;
+            },
+        }), { events: { PLAYBACK_TIME_UPDATED: 'playbackTimeUpdated', ERROR: 'error' } }),
+    };
     const fetched = [];
     const fetch = async (url) => {
         fetched.push(url);
@@ -74,14 +91,14 @@ function page(files) {
         return client;
     };
     const ctx = vm.createContext({
-        $, videojs, fetch, console, document, URL, setTimeout, clearTimeout, crypto: globalThis.crypto,
+        $, videojs, dashjs, fetch, console, document, URL, setTimeout, clearTimeout, crypto: globalThis.crypto,
         setInterval() {}, mqtt: { connect }, location: { protocol: 'http:', host: 'tv.test' },
     });
     ctx.window = ctx;
     vm.runInContext(fs.readFileSync(POPUP_JS, 'utf8'), ctx, { filename: 'popup.js' });
     vm.runInContext(fs.readFileSync(DISPLAY_JS, 'utf8'), ctx, { filename: 'display.js' });
     const setVideoUrl = (url) => vm.runInContext('setVideoUrl', ctx)(url);
-    return { setVideoUrl, players, fetched, errors, popup, connections };
+    return { setVideoUrl, players, dashPlayers, fetched, errors, popup, connections };
 }
 
 test('HLS em fMP4: a mestre e as de midia tem #EXT-X-MAP, e a mestre vai ao reprodutor', async () => {
@@ -113,14 +130,22 @@ test('playlist de midia direta: so ela e lida; sem resposta, recusada', async ()
     assert.equal(p.players.length, 0);
 });
 
-test('DASH vai direto; uma fonte nova troca a do reprodutor ja criado', async () => {
+test('DASH vai direto ao dash.js; uma fonte nova troca a do reprodutor ja criado; HLS tira o dash.js e vai ao video.js', async () => {
     const media = `${LIVE}video/playlist.m3u8`;
     const p = page({ [media]: FMP4_TEXT });
     await p.setVideoUrl('/dash/1001/mpd');
+    await p.setVideoUrl('/dash/1002/mpd');
     assert.deepEqual(p.fetched, []);
+    assert.equal(p.dashPlayers.length, 1);
+    assert.deepEqual(p.dashPlayers[0].sources, ['/dash/1001/mpd', '/dash/1002/mpd']);
+    assert.equal(p.players.length, 0);
     await p.setVideoUrl(media);
+    assert.equal(p.dashPlayers[0].destroyed, true);
     assert.equal(p.players.length, 1);
-    assert.deepEqual(p.players[0].sources.map((s) => s.type), ['application/dash+xml', 'application/x-mpegURL']);
+    assert.deepEqual(p.players[0].sources.map((s) => s.type), ['application/x-mpegURL']);
+    await p.setVideoUrl('/dash/1001/mpd');
+    assert.equal(p.players[0].disposed, true);
+    assert.equal(p.dashPlayers.length, 2);
 });
 
 test('fonte pedida durante a verificacao do HLS: a verificacao antiga nao inicia o reprodutor', async () => {

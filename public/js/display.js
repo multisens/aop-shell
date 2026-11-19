@@ -23,7 +23,9 @@ const HLS_MAP_TAG = '#EXT-X-MAP';
 const HLS_URI_ATTRIBUTE = /URI="([^"]*)"/;
 const HLS_REFUSED_NOTICE_MS = 8000;
 
+// video.js, for HLS, and dash.js, for DASH; at most one of them exists.
 let player = null;
+let dashPlayer = null;
 let publishTopic = null;
 // The last media source asked for: a check of an older one that ends later
 // does not start it.
@@ -87,8 +89,16 @@ function mqttMessage(topic, message) {
     }
 }
 
-// A player already created changes its source (PMPFR-08).
+// DASH goes to dash.js and HLS to video.js; the player of the other kind
+// leaves first. A player already created changes its source (PMPFR-08).
 function instancePlayer(mediaUrl, mediaType) {
+    if (mediaType === DASH_TYPE) {
+        instanceDashPlayer(mediaUrl);
+        return;
+    }
+    if (dashPlayer) {
+        stopPlayer();
+    }
     if (player) {
         player.src({ src: mediaUrl, type: mediaType });
         startPlayer();
@@ -114,6 +124,31 @@ function instancePlayer(mediaUrl, mediaType) {
         setTimeout(() => {
             player.src(source);
             startPlayer();
+        }, PLAYER_RESTART_MS);
+    });
+}
+
+// dash.js on the video element of the page, with autoplay.
+function instanceDashPlayer(mediaUrl) {
+    if (player) {
+        stopPlayer();
+    }
+    if (dashPlayer) {
+        dashPlayer.attachSource(mediaUrl);
+        return;
+    }
+    const events = dashjs.MediaPlayer.events;
+    dashPlayer = dashjs.MediaPlayer().create();
+    dashPlayer.initialize(document.getElementById('video'), mediaUrl, true);
+    dashPlayer.on(events.PLAYBACK_TIME_UPDATED, (event) => {
+        graphicsEvent('timeupdate', { detail: event.time });
+    });
+    dashPlayer.on(events.ERROR, (event) => {
+        console.warn('DASH player error — restarting...', event.error);
+        setTimeout(() => {
+            if (dashPlayer) {
+                dashPlayer.attachSource(requestedUrl);
+            }
         }, PLAYER_RESTART_MS);
     });
 }
@@ -160,11 +195,15 @@ async function setVideoUrl(url) {
     instancePlayer(url, mediaType);
 }
 
-// The player leaves, and a new video element takes its place.
+// The players leave, and a new video element takes their place.
 function stopPlayer() {
     if (player && !player.isDisposed()) {
         player.dispose(true);
         player = null;
+    }
+    if (dashPlayer) {
+        dashPlayer.destroy();
+        dashPlayer = null;
     }
     if ($('#video').length > 0) {
         $('#video').replaceWith(VIDEO_ELEMENT);
