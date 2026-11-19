@@ -248,25 +248,61 @@ const BALD = { EntryPackage: [{
 const app = (name) => ({ appId: `urn:tv30:app:${name}`, origin: `http://${name}.apps.localhost:8081`,
     url: `http://${name}.apps.localhost:8081/index.html` });
 
-test('lancamento pela BALD: abre na origem do appContextId e registra essa origem como associada', async () => {
+const tick = () => new Promise((r) => setImmediate(r));
+const available = (location) => fakeMqtt.emit('message', `tlm/object/${SERVICE_ID}/available`,
+    Buffer.from(JSON.stringify({ serviceId: SERVICE_ID, contentLocation: location })));
+const RECORD = JSON.stringify({ serviceId: SERVICE_ID, bsid: 10, bam: { globalServiceId: SID, appName: 'Users' } });
+
+test('lancamento pela BALD: espera o ponto de entrada passar no carrossel, abre na origem do appContextId e a registra', async () => {
+    store.set('services:announced', new Map([[SID, RECORD]]));
     await core.setCurrentService(SID);
+    assert.ok(subscribed.includes(`tlm/object/${SERVICE_ID}/+`));
     fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(BALD)));
     await bootstrap.fullscreen();
+    await tick();
+    assert.deepEqual(origins(), {});
+    assert.notEqual(lastGraphics(), `${CONTEXT_ORIGIN}/index.html`);
+
+    available('app.pkg');
+    await tick();
+    assert.deepEqual(origins(), {});
+    available('index.html');
+    await tick();
+    await tick();
     assert.deepEqual(origins(), { [CONTEXT_ORIGIN]: SID });
     assert.equal(lastGraphics(), `${CONTEXT_ORIGIN}/index.html`);
 });
 
-test('com os dois pontos de entrada, o de banda larga primeiro (10.1); bband invalido cai no de radiodifusao', async () => {
+test('com os dois pontos de entrada, o de banda larga primeiro (10.1), sem esperar; bband invalido cai no de radiodifusao', async () => {
     const both = { EntryPackage: [{ ...BALD.EntryPackage[0], bbandEntryPointUrl: 'http://localhost:8082/services/1001/app/index.html' }] };
     fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(both)));
     await bootstrap.fullscreen();
     assert.deepEqual(origins(), { 'http://localhost:8082': SID });
     assert.equal(lastGraphics(), 'http://localhost:8082/services/1001/app/index.html');
 
+    // index.html is still available: the broadcast launch does not wait.
     const invalid = { EntryPackage: [{ ...BALD.EntryPackage[0], bbandEntryPointUrl: 'nao-e-url' }] };
     fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(invalid)));
     await bootstrap.fullscreen();
+    await tick();
+    await tick();
     assert.deepEqual(origins(), { [CONTEXT_ORIGIN]: SID });
+    fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(BALD)));
+});
+
+test('expirado o ponto de entrada, ou deixado o servico, o lancamento por radiodifusao nao abre', async () => {
+    await core.setDisplayGraphics();
+    fakeMqtt.emit('message', `tlm/object/${SERVICE_ID}/expired`,
+        Buffer.from(JSON.stringify({ serviceId: SERVICE_ID, contentLocation: 'index.html' })));
+    await bootstrap.fullscreen();
+    await tick();
+    assert.deepEqual(origins(), {});
+    core.unsetCurrentService();
+    available('index.html');
+    await tick();
+    await tick();
+    assert.deepEqual(origins(), {});
+    await core.setCurrentService(SID);
     fakeMqtt.emit('message', `tlm/sls/${SERVICE_ID}/bald`, Buffer.from(JSON.stringify(BALD)));
 });
 
@@ -379,7 +415,7 @@ test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava service
     await core.setCurrentService(SID);
     assert.equal(core.getCurrentService().bam.appName, 'Users');
     assert.equal(core.getCurrentService().serviceId, SERVICE_ID);
-    assert.equal(subscribed.at(-1), `tlm/sls/${SERVICE_ID}/#`);
+    assert.deepEqual(subscribed.slice(-2), [`tlm/sls/${SERVICE_ID}/#`, `tlm/object/${SERVICE_ID}/+`]);
     // The tuning (5.2), retained: the service, its RF channel and the instant.
     const tuned = published.filter(([t]) => t === 'tlm/tuned').at(-1);
     assert.equal(tuned[2], true);
@@ -393,7 +429,7 @@ test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava service
     await ate(() => servicos().at(-1)[1] === '[]');
     assert.equal(store.get('services:announced').size, 0);
     core.unsetCurrentService();
-    assert.equal(unsubscribed.at(-1), `tlm/sls/${SERVICE_ID}/#`);
+    assert.deepEqual(unsubscribed.slice(-2), [`tlm/sls/${SERVICE_ID}/#`, `tlm/object/${SERVICE_ID}/+`]);
     assert.deepEqual(published.filter(([t]) => t === 'tlm/tuned').at(-1), ['tlm/tuned', '', true]);
     fakeMqtt.emit('message', 'tlm/lls/10/slt', Buffer.from(''));
 });

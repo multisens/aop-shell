@@ -159,7 +159,9 @@ function fullscreen() {
 }
 
 // Only HTML5 applications with AUTOSTART, or no controlCode, are started.
-// The BALD is { EntryPackage: [...] }.
+// The BALD is { EntryPackage: [...] }. The promise is the one of the
+// broadband launches; a broadcast launch waits, apart, for its entry point
+// to be available in the carousel.
 function startApp(bald) {
     const pending = [];
     for (const entryPackage of bald.EntryPackage) {
@@ -172,24 +174,47 @@ function startApp(bald) {
             logger.error(`[apps] ${entryPackage.appId} not opened: no valid entry point`);
             continue;
         }
-        pending.push(core.setDisplayGraphics({ appId: entryPackage.appId, ...launch }));
+        const app = { appId: entryPackage.appId, origin: launch.origin, url: launch.url };
+        if (launch.awaits === null) {
+            pending.push(core.setDisplayGraphics(app));
+            continue;
+        }
+        launchWhenAvailable(app, launch.awaits).catch((err) => {
+            logger.error(`[apps] ${entryPackage.appId} not opened: ${err.message}`);
+        });
     }
     return Promise.all(pending);
 }
 
+// Before its first pass after the tuning the object proxy answers 404 to
+// the entry point (implementation document, 5.3): the launch waits for the
+// object event that makes it available. Leaving the service gives up.
+async function launchWhenAvailable(app, entryPoint) {
+    logger.info(`[apps] ${app.appId} waits for ${entryPoint} in the carousel`);
+    const available = await core.whenObjectAvailable(entryPoint);
+    if (!available) {
+        logger.info(`[apps] ${app.appId} not opened: the service was left before ${entryPoint} passed`);
+        return;
+    }
+    await core.setDisplayGraphics(app);
+    logger.info(`[apps] ${app.appId} opened at ${app.url}`);
+}
+
 // ABNT NBR 25608, 10.1: with both entry points, the broadband one first;
 // the broadcast one opens on the origin of the Application Context ID
-// (implementation document, 5.4). Null without a usable entry point.
+// (implementation document, 5.4) and awaits its entry point. Null without a
+// usable entry point.
 function launchOf(entryPackage) {
     if (entryPackage.bbandEntryPointUrl !== undefined) {
         const broadband = appHosts.broadbandLaunch(entryPackage.bbandEntryPointUrl);
         if (broadband !== null) {
-            return broadband;
+            return { ...broadband, awaits: null };
         }
         logger.error(`[apps] bbandEntryPointUrl '${entryPackage.bbandEntryPointUrl}' is not an absolute HTTP URL`);
     }
     if (entryPackage.bcastEntryPointUrl !== undefined) {
-        return appHosts.broadcastLaunch(entryPackage.appContextId, entryPackage.bcastEntryPointUrl, APPS);
+        const broadcast = appHosts.broadcastLaunch(entryPackage.appContextId, entryPackage.bcastEntryPointUrl, APPS);
+        return { ...broadcast, awaits: entryPackage.bcastEntryPointUrl };
     }
     return null;
 }

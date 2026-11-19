@@ -20,6 +20,8 @@ const USER_LOAD_ATTEMPTS = 5;
 const USER_LOAD_STEP_MS = 2000;
 const BALD_FRAGMENT = 'bald';
 const MPD_FRAGMENT = 'mpd';
+const OBJECT_AVAILABLE = 'available';
+const OBJECT_EXPIRED = 'expired';
 // SLT Service@configuration when absent.
 const DEFAULT_CONFIGURATION = 'Broadcast';
 
@@ -35,6 +37,7 @@ const TOPICS = {
     removed_user: 'aop/removedUser',
     current_service: 'aop/currentService',
     sls_metadata: 'tlm/sls/+/#',
+    object_events: 'tlm/object/+/+',
     gui_layer: 'aop/display/layers/rxgui',
     pmplayer_url: 'aop/display/layers/video/url',
     pmplayer_size: 'aop/display/layers/video/size',
@@ -60,6 +63,11 @@ const DATA = {
     currentService: '',
     currentEntry: undefined,
     serviceMetadata: {},
+    // contentLocation of each object of the carousel of the current service
+    // available now, by the object events of the proxy since the tuning; and
+    // the launches waiting for one: { location, resolve }.
+    availableObjects: new Set(),
+    objectWaiters: [],
 };
 
 // Handler of each subscribed topic filter.
@@ -158,6 +166,7 @@ function getUserList() {
 // failure rejects, with the service already published.
 async function setCurrentService(sid) {
     const tunedAt = new Date();
+    forgetObjects();
     DATA.currentService = sid.toString();
     DATA.currentEntry = undefined;
     client.publish(TOPICS.current_service, sid.toString(), { retain: true });
@@ -172,13 +181,16 @@ async function setCurrentService(sid) {
     }
     dashStreams.select(entry.serviceId);
     client.subscribe(slsFilter(entry.serviceId), { noLocal: true });
+    client.subscribe(objectFilter(entry.serviceId), { noLocal: true });
     publishTuning(entry, tunedAt);
 }
 
 function unsetCurrentService() {
     if (DATA.currentEntry) {
         client.unsubscribe(slsFilter(DATA.currentEntry.serviceId), { noLocal: true });
+        client.unsubscribe(objectFilter(DATA.currentEntry.serviceId), { noLocal: true });
     }
+    forgetObjects();
     client.publish(TOPICS.current_service, '', { retain: true });
     client.publish(TOPICS.tuned, '', { retain: true });
     DATA.currentService = '';
@@ -191,6 +203,18 @@ function unsetCurrentService() {
 // service, from the Application Catalog, or undefined.
 function getCurrentService() {
     return DATA.currentEntry;
+}
+
+// Resolves true when the object of contentLocation of the carousel of the
+// current service is available (at once if it is already), or false when
+// the service is left first.
+function whenObjectAvailable(location) {
+    if (DATA.availableObjects.has(location)) {
+        return Promise.resolve(true);
+    }
+    return new Promise((resolve) => {
+        DATA.objectWaiters.push({ location, resolve });
+    });
 }
 
 function getServiceSLS() {
@@ -310,6 +334,46 @@ async function loadCurrentService(message) {
     }
 }
 
+// tlm/object/<serviceId>/{available,expired} (implementation document,
+// 5.6), of the current service only.
+function loadObjectEvent(message, topic) {
+    const [, , serviceId, event] = topic.split('/');
+    if (!DATA.currentEntry || String(DATA.currentEntry.serviceId) !== serviceId) {
+        return;
+    }
+    let location;
+    try {
+        location = JSON.parse(message).contentLocation;
+    } catch (err) {
+        logger.error(`[objects] event of ${topic} ignored: ${err.message}`);
+        return;
+    }
+    switch (event) {
+        case OBJECT_AVAILABLE:
+            DATA.availableObjects.add(location);
+            DATA.objectWaiters = DATA.objectWaiters.filter((waiter) => {
+                if (waiter.location !== location) {
+                    return true;
+                }
+                waiter.resolve(true);
+                return false;
+            });
+            break;
+        case OBJECT_EXPIRED:
+            DATA.availableObjects.delete(location);
+            break;
+        default:
+    }
+}
+
+// The service left: nothing of its carousel is available, and the launches
+// waiting give up.
+function forgetObjects() {
+    DATA.availableObjects = new Set();
+    DATA.objectWaiters.forEach((waiter) => waiter.resolve(false));
+    DATA.objectWaiters = [];
+}
+
 // Of the SLS fragments, the BALD is read here and the MPD goes to
 // aop-dash-streams; the others are left to their consumers.
 function loadSLSMetadata(meta, topic) {
@@ -358,6 +422,11 @@ function slsFilter(serviceId) {
     return TOPICS.sls_metadata.replace('+', String(serviceId));
 }
 
+// tlm/object/<serviceId>/+.
+function objectFilter(serviceId) {
+    return TOPICS.object_events.replace('+', String(serviceId));
+}
+
 function mqttTopicMatch(topic, filter) {
     const levels = filter.split('/').map((level) => {
         if (level === '+') {
@@ -377,8 +446,10 @@ function onConnect() {
         client.subscribe(filter, { noLocal: true });
     });
 
-    // Additional topics to handle, but no subscribe yet
+    // Topics of the current service: handled here, subscribed by
+    // setCurrentService.
     handlers.set(TOPICS.sls_metadata, loadSLSMetadata);
+    handlers.set(TOPICS.object_events, loadObjectEvent);
 
     loadUserData();
 }
@@ -416,6 +487,7 @@ module.exports = {
     unsetCurrentService,
     getCurrentService,
     getServiceSLS,
+    whenObjectAvailable,
     setBALDHandler,
     openServiceInfo,
     loadUserData,
