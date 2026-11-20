@@ -323,7 +323,7 @@ function slsFilter(serviceId) {
     return TOPICS.sls_metadata.replace('+', String(serviceId));
 }
 
-// tlm/object/<serviceId>/+.
+// Whether a topic matches a subscription filter, with + and #.
 function mqttTopicMatch(topic, filter) {
     const levels = filter.split('/').map((level) => {
         if (level === '+') {
