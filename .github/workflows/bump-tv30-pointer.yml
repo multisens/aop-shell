@@ -58,8 +58,8 @@ jobs:
           AOP_SHA: ${{ github.sha }}
         run: |
           set -e
-          git config user.name  "Luis Claudio Ribeiro Junior"
-          git config user.email "luis.claudio.r.jr@gmail.com"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
 
           CURRENT=$(git ls-tree HEAD aop-shell | awk '{print $3}')
           if [ "$CURRENT" = "$AOP_SHA" ]; then
