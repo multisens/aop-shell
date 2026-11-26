@@ -118,13 +118,13 @@ test('svgDataUri: so SVG no namespace do SVG; sem xmlns, ou com outro, recusado 
 
 test('svgImageHtml: icone recusado nao e exibido e sai no log com o motivo, uma vez', () => {
     const avisos = [];
-    const original = console.warn;
-    console.warn = m => avisos.push(String(m));
+    const original = console.log;
+    console.log = m => avisos.push(String(m));
     try {
         assert.equal(svgImageHtml(ICON_NO_NS, { alt: '' }, 'appIcon do BAM de urn:teste'), '');
         assert.equal(svgImageHtml(ICON_NO_NS, { alt: '' }, 'appIcon do BAM de urn:teste'), '');
         assert.equal(svgImageHtml(undefined, {}, 'appIcon do BAM de urn:outro'), '');
-    } finally { console.warn = original; }
+    } finally { console.log = original; }
     assert.equal(avisos.length, 1, avisos.join('\n'));
     assert.match(avisos[0], /SVG recusado.*appIcon do BAM de urn:teste.*fora do namespace/);
 });

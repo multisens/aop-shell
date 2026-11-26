@@ -7,33 +7,35 @@ const redis = require('../../redis-client');
 const redisFunctions = require('../../redis-functions');
 const avatars = require('./avatar');
 
+// Error of the sent data (400 with the message). A storage failure is NOT a
+// ValidationError: it is thrown and becomes 404 {error:200}.
+class ValidationError extends Error {}
+
 const VALID_RATINGS = ['L', '10', '12', '14', '16', '18'];
 const VALID_SIDES = ['left', 'right'];
 
-// Table 7: languages in IETF RFC 5646. The same format check as the Redis
-// function (languageOk in infra/redis/functions.lua): subtags of 1 to 8 letters
-// or digits separated by '-', the first one letters only (2 to 8) or the
-// singleton x/i. The IANA registry is not checked.
-function isLanguageTag(v) {
-    if (typeof v !== 'string') return false;
-    const parts = v.split('-');
-    if (!parts.every(p => /^[A-Za-z0-9]{1,8}$/.test(p))) return false;
-    return /^[A-Za-z]{2,8}$/.test(parts[0]) || parts[0] === 'x' || parts[0] === 'i';
-}
 const LANGUAGE_FIELDS = ['audioLanguage', 'userInterfaceLanguage', 'closedCaptioningLanguage'];
 // Visibility per service: the id of the service, as in aop/currentService
 // (at most 256 characters).
 const MAX_SERVICE_ID = 256;
 
-// Error of the sent data (400 with the message). A storage failure is NOT a
-// ValidationError: it is thrown and becomes 404 {error:200}.
-class ValidationError extends Error {}
+// Unique in the receiver: the default profile is created only with an empty
+// base.
+const DEFAULT_NICKNAME = 'Viewer 1';
+
+// The check of the set and the write, for the default profile and the
+// removal, one at a time in this process (inSeries).
+let queue = Promise.resolve();
 
 // Table 7 (basic attributes of the viewer profile).
 function validateProfile(userData) {
     const nickname = String(userData.nickname || userData.name || '').trim();
-    if (!nickname) throw new ValidationError('nickname é obrigatório');
-    if (nickname.length > 20) throw new ValidationError('nickname deve ter no máximo 20 caracteres');
+    if (!nickname) {
+        throw new ValidationError('nickname é obrigatório');
+    }
+    if (nickname.length > 20) {
+        throw new ValidationError('nickname deve ter no máximo 20 caracteres');
+    }
 
     const parentalControl = !!userData.parentalControl;
     if (parentalControl && !userData.maxContentRating) {
@@ -47,7 +49,9 @@ function validateProfile(userData) {
     if (closedSigning) {
         if (userData.closedSigningWidth !== undefined) {
             const w = parseInt(userData.closedSigningWidth);
-            if (isNaN(w) || w < 14 || w > 28) throw new ValidationError('closedSigningWidth deve estar entre 14 e 28');
+            if (isNaN(w) || w < 14 || w > 28) {
+                throw new ValidationError('closedSigningWidth deve estar entre 14 e 28');
+            }
         }
         if (userData.closedSigningSide && !VALID_SIDES.includes(userData.closedSigningSide)) {
             throw new ValidationError('closedSigningSide deve ser "left" ou "right"');
@@ -58,7 +62,9 @@ function validateProfile(userData) {
     for (const f of LANGUAGE_FIELDS) {
         // The caption one is written only with closedCaptioning on
         // (createProfile).
-        if (f === 'closedCaptioningLanguage' && !userData.closedCaptioning) continue;
+        if (f === 'closedCaptioningLanguage' && !userData.closedCaptioning) {
+            continue;
+        }
         if (userData[f] !== undefined && userData[f] !== '' && !isLanguageTag(userData[f])) {
             throw new ValidationError(`${f} deve ser uma etiqueta de idioma IETF RFC 5646, como pt-BR`);
         }
@@ -66,7 +72,9 @@ function validateProfile(userData) {
     if (userData.accessConsent !== undefined) {
         const ok = Array.isArray(userData.accessConsent) && userData.accessConsent.every(
             s => typeof s === 'string' && s.length > 0 && [...s].length <= MAX_SERVICE_ID);
-        if (!ok) throw new ValidationError(`accessConsent deve ser uma lista de ids de serviço (texto de 1 a ${MAX_SERVICE_ID} caracteres)`);
+        if (!ok) {
+            throw new ValidationError(`accessConsent deve ser uma lista de ids de serviço (texto de 1 a ${MAX_SERVICE_ID} caracteres)`);
+        }
     }
     return nickname;
 }
@@ -75,7 +83,9 @@ function validateProfile(userData) {
 // atomic in the function): no ghost hash, and a profile removed in between
 // is not recreated.
 async function touchLastAccess(id, now = Date.now()) {
-    if (!id) return false;
+    if (!id) {
+        return false;
+    }
     return redisFunctions.profileLastAccess(String(id), String(now));
 }
 
@@ -134,38 +144,31 @@ async function createProfile(userData) {
 
     const hashFields = {};
     for (const [k, v] of Object.entries(newUser)) {
-        if (v !== null && v !== undefined) hashFields[k] = String(v);
+        if (v !== null && v !== undefined) {
+            hashFields[k] = String(v);
+        }
     }
     try {
         await redisFunctions.profileWrite(userId, accessConsent, hashFields);
     } catch (err) {
-        const teto = redisFunctions.profileLimitOf(err);
-        if (teto !== null) throw new ValidationError(`O limite de ${teto} perfis foi atingido. O perfil não foi criado.`);
+        const limit = redisFunctions.profileLimitOf(err);
+        if (limit !== null) {
+            throw new ValidationError(`O limite de ${limit} perfis foi atingido. O perfil não foi criado.`);
+        }
         throw err;
     }
 
     return { user: { ...newUser, accessConsent } };
 }
 
-// The check of the set and the write, for the default profile and the
-// removal, one at a time in this process.
-let fila = Promise.resolve();
-function emSerie(fn) {
-    const p = fila.then(fn, fn);
-    fila = p.catch(() => undefined);
-    return p;
-}
-
-// Unique in the receiver: the default profile is created only with an empty
-// base.
-const DEFAULT_NICKNAME = 'Viewer 1';
-
 // Base without profiles: a default profile with the defaults of Table 7
 // (optional and conditional attributes absent) and no visibility; null if
 // there was already a profile.
 function ensureDefaultProfile() {
-    return emSerie(async () => {
-        if ((await redis.smembers('users:index')).length > 0) return null;
+    return inSeries(async () => {
+        if ((await redis.smembers('users:index')).length > 0) {
+            return null;
+        }
         const id = crypto.randomUUID();
         const fields = {
             id,
@@ -186,14 +189,45 @@ function ensureDefaultProfile() {
 // Removal by the viewer; messages in the language of the profile choice
 // screen.
 function removeProfile(id) {
-    return emSerie(async () => {
+    return inSeries(async () => {
         const ids = await redis.smembers('users:index');
-        if (!id || !ids.includes(id)) throw new ValidationError('This profile no longer exists.');
-        if (ids.length < 2) throw new ValidationError('The only registered profile cannot be removed.');
+        if (!id || !ids.includes(id)) {
+            throw new ValidationError('This profile no longer exists.');
+        }
+        if (ids.length < 2) {
+            throw new ValidationError('The only registered profile cannot be removed.');
+        }
 
         await redisFunctions.profileRemove(id);
         return { id };
     });
+}
+
+// Table 7: languages in IETF RFC 5646. The same format check as the Redis
+// function (languageOk in infra/redis/functions.lua): subtags of 1 to 8 letters
+// or digits separated by '-', the first one letters only (2 to 8) or the
+// singleton x/i. The IANA registry is not checked.
+function isLanguageTag(v) {
+    if (typeof v !== 'string') {
+        return false;
+    }
+    const parts = v.split('-');
+    if (!parts.every(p => /^[A-Za-z0-9]{1,8}$/.test(p))) {
+        return false;
+    }
+    return /^[A-Za-z]{2,8}$/.test(parts[0]) || parts[0] === 'x' || parts[0] === 'i';
+}
+// Runs fn after the operations already in the queue; a failure of fn does
+// not stop the next ones.
+function inSeries(fn) {
+    const result = runAfter(queue, fn);
+    queue = result.catch(() => undefined);
+    return result;
+}
+
+async function runAfter(previous, fn) {
+    await previous;
+    return fn();
 }
 
 module.exports = { createProfile, ensureDefaultProfile, removeProfile, touchLastAccess, ValidationError };

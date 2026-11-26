@@ -2,10 +2,12 @@ const core = require('../../../core');
 const ejs = require('ejs');
 const express = require('express');
 const path = require('path');
-const router = express.Router();
+const { DEFAULT_AVATAR_SVG } = require('../avatar');
 const service = require('./service');
 
-router.get('/', async (req, res, next) => {
+const router = express.Router();
+
+router.get('/', async (req, res) => {
     // The chooser runs WITHOUT an active service: clears the retained
     // aop/currentService. A Redis failure gives 404 {error:200}.
     core.unsetCurrentService();
@@ -15,7 +17,7 @@ router.get('/', async (req, res, next) => {
         {
             cards: await service.cards(),
             basepath: core.GUI.profile_chooser,
-            defaultAvatar: require('../avatar').DEFAULT_AVATAR_SVG
+            defaultAvatar: DEFAULT_AVATAR_SVG,
         });
     res.send(html);
 });

@@ -4,19 +4,29 @@
 // <img src="data:image/svg+xml;base64,...">, where the browser runs no
 // script and loads no external resource (Table 6: "Secure static mode SVG
 // image").
+const logger = require('./logger');
+
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' };
+
+// The refusals already logged by svgImageHtml, as "<label>|<reason>".
+const refusalsLogged = new Set();
 
 function escapeHtml(value) {
-    return String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    return String(value ?? '').replace(/[&<>"']/g, c => HTML_ESCAPES[c]);
 }
 
 // Table 6: appIcon and bannerIcon are xs:any
 // namespace="http://www.w3.org/2000/svg". An SVG without this xmlns is
 // refused, not fixed. Returns the reason of the refusal ('' = accepted).
 function svgProblem(svg) {
-    if (typeof svg !== 'string' || svg.trim() === '') return 'ausente';
+    if (typeof svg !== 'string' || svg.trim() === '') {
+        return 'ausente';
+    }
     const root = /<svg(?=[\s/>])[^>]*>/.exec(svg);
-    if (!root) return 'sem elemento <svg>';
+    if (!root) {
+        return 'sem elemento <svg>';
+    }
     if (!/\sxmlns\s*=\s*(["'])http:\/\/www\.w3\.org\/2000\/svg\1/.test(root[0])) {
         return `elemento <svg> fora do namespace ${SVG_NS} (xmlns ausente ou outro)`;
     }
@@ -38,19 +48,20 @@ function svgDataUri(svg) {
 
 // <img> with the given URL, with extra attributes escaped; '' without URL.
 function imageHtml(src, attrs = {}) {
-    if (!src) return '';
+    if (!src) {
+        return '';
+    }
     const extra = Object.entries(attrs).map(([k, v]) => ` ${k}="${escapeHtml(v)}"`).join('');
     return `<img src="${escapeHtml(src)}"${extra}>`;
 }
 
 // <img> of the SVG, with extra attributes escaped; '' without SVG. With
 // label, a refused SVG is logged with the reason, once per label and reason.
-const refusalsLogged = new Set();
 function svgImageHtml(svg, attrs = {}, label = '') {
     const problem = svgProblem(svg);
     if (problem && problem !== 'ausente' && label && !refusalsLogged.has(`${label}|${problem}`)) {
         refusalsLogged.add(`${label}|${problem}`);
-        console.warn(`[aop] AVISO SVG recusado, nao exibido (${label}): ${problem}`);
+        logger.info(`[aop] AVISO SVG recusado, nao exibido (${label}): ${problem}`);
     }
     return imageHtml(svgDataUri(svg), attrs);
 }
