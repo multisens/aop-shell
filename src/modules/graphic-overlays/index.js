@@ -28,6 +28,10 @@ router.get('/ready', (req, res) => {
 router.get('/keydown/:keyCode', (req, res) => {
     switch (req.params.keyCode) {
         case KEY_ESCAPE:
+            if (!core.closeComponentScreen()) {
+                core.openServiceInfo();
+            }
+            break;
         case KEY_CONTEXT_MENU:
         case KEY_HOME:
             core.openServiceInfo();

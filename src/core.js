@@ -14,6 +14,7 @@ const USER_LOAD_STEP_MS = 2000;
 const MPD_FRAGMENT = 'mpd';
 // SLT Service@configuration when absent.
 const DEFAULT_CONFIGURATION = 'Broadcast';
+const ABSOLUTE_URL = /^https?:\/\//;
 
 const GUI = {
     app_catalogue: '/appcat',
@@ -37,9 +38,12 @@ const TOPICS = {
 };
 
 const DATA = {
+    // The screen of the interface layer and the one before it; component is
+    // true while the screen is one a component published.
     rxgui: {
         current: '',
         previous: '',
+        component: false,
     },
     // Application in the graphics layer, as aop-application-lifecycle-manager
     // publishes it: { serviceContextId, appId, origin, url }, or null for
@@ -63,6 +67,7 @@ const handlers = new Map([
     [lls.TOPIC, lls.receive],
     [catalog.SCAN_TOPIC, catalog.receiveScan],
     [TOPICS.graphics_application, loadGraphicsApplication],
+    [TOPICS.gui_layer, loadInterfaceScreen],
 ]);
 
 const client = mqtt.connect(`mqtt://${process.env.MQTT_HOST}`, {
@@ -75,6 +80,31 @@ function setDisplayGui(screen) {
     client.publish(TOPICS.gui_layer, screen);
     DATA.rxgui.previous = DATA.rxgui.current;
     DATA.rxgui.current = screen;
+    DATA.rxgui.component = false;
+}
+
+// A screen of the interface layer published by a component: an absolute
+// URL. The screens of the platform are paths (GUI) and come back here from
+// setDisplayGui; they are ignored.
+function loadInterfaceScreen(screen) {
+    if (!ABSOLUTE_URL.test(screen) || screen === DATA.rxgui.current) {
+        return;
+    }
+    if (!DATA.rxgui.component) {
+        DATA.rxgui.previous = DATA.rxgui.current;
+    }
+    DATA.rxgui.current = screen;
+    DATA.rxgui.component = true;
+}
+
+// With a screen of a component in the interface layer, goes back to the
+// screen before it; true if it did.
+function closeComponentScreen() {
+    if (!DATA.rxgui.component) {
+        return false;
+    }
+    setDisplayGui(DATA.rxgui.previous);
+    return true;
 }
 
 // The media source of the Persistent Media Player; empty stops it.
@@ -383,6 +413,7 @@ module.exports = {
     getServiceSLS,
     getGraphicsApp,
     openServiceInfo,
+    closeComponentScreen,
     loadUserData,
     refreshUserData,
 };

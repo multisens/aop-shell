@@ -179,7 +179,8 @@
             }
 
             document.addEventListener('keydown', (e) => {
-                if (pendingRemoval && e.key === 'Escape') {
+                if (pendingRemoval && e.key === 'BrowserBack') {
+                    e.preventDefault();
                     closeRemoval();
                     return;
                 }

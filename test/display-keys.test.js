@@ -14,8 +14,12 @@ const DISPLAY_JS = path.join(__dirname, '..', 'public', 'js', 'display.js');
 const APP_URL = 'http://ctx-0123456789abcdef.apps.localhost:8081/app.pkg/index.html';
 const APP_ORIGIN = 'http://ctx-0123456789abcdef.apps.localhost:8081';
 const KEYS = { Escape: 27, ContextMenu: 93, Home: 36, a: 65 };
+const SCREEN_URL = 'http://componente.test:8090/tela';
+const SCREEN_ORIGIN = 'http://componente.test:8090';
 
-function page(graphicsSrc) {
+// screen: the screen of the interface layer, { src, document }; document
+// null is a screen of another origin.
+function page(graphicsSrc, screen = { src: '', document: null }) {
     const posted = [];
     const contentWindow = {
         postMessage: (message, origin) => {
@@ -28,8 +32,19 @@ function page(graphicsSrc) {
         contentDocument: null,
         getAttribute: (name) => (name === 'src' ? graphicsSrc : null),
     };
-    const elements = { graphics, popup: { style: {} }, video: {} };
-    const attrs = { '#graphics': graphicsSrc, '#rxgui': '' };
+    const screenWindow = {
+        postMessage: (message, origin) => {
+            posted.push({ message, origin, frame: 'rxgui' });
+        },
+    };
+    const rxgui = {
+        src: screen.src,
+        contentWindow: screenWindow,
+        contentDocument: screen.document,
+        getAttribute: (name) => (name === 'src' ? screen.src : null),
+    };
+    const elements = { graphics, rxgui, popup: { style: {} }, video: {} };
+    const attrs = { '#graphics': graphicsSrc, '#rxgui': screen.src };
     const $ = (selector) => ({
         attr: () => attrs[selector] ?? '',
         length: 1,
@@ -49,6 +64,11 @@ function page(graphicsSrc) {
         $,
         document,
         URL,
+        KeyboardEvent: class {
+            constructor(type, init) {
+                Object.assign(this, { type }, init);
+            }
+        },
         console,
         setTimeout,
         clearTimeout,
@@ -72,7 +92,7 @@ function page(graphicsSrc) {
     const message = (data, origin, source = contentWindow) => {
         listeners['window message']({ data, origin, source });
     };
-    return { press, message, posted, fetched };
+    return { press, message, posted, fetched, screenWindow };
 }
 
 test('com aplicacao: Escape vai como BrowserBack e ContextMenu como ContextMenu, so a origem dela', () => {
@@ -115,4 +135,56 @@ test('sem aplicacao: Escape e ContextMenu vao a plataforma', () => {
     p.press('ContextMenu');
     assert.deepEqual(p.fetched, ['keydown/27', 'keydown/93']);
     assert.deepEqual(p.posted, []);
+});
+
+// A screen of the platform: the document of the frame, of the same origin;
+// cancel says whether its handler cancels the key.
+function platformScreen(cancel) {
+    const received = [];
+    return {
+        received,
+        document: {
+            dispatchEvent: (event) => {
+                received.push(event.key);
+                return !(cancel && event.cancelable);
+            },
+        },
+    };
+}
+
+test('tela da plataforma na camada de interface: Escape vai como BrowserBack; nao cancelado, a plataforma faz o Escape', () => {
+    const screen = platformScreen(false);
+    const p = page('', { src: '/prfchs', document: screen.document });
+    p.press('Escape');
+    p.press('ContextMenu');
+    p.press('a');
+    assert.deepEqual(screen.received, ['BrowserBack', 'ContextMenu', 'a']);
+    assert.deepEqual(p.fetched, ['keydown/27']);
+});
+
+test('tela da plataforma que cancela o Back: nada vai a plataforma', () => {
+    const screen = platformScreen(true);
+    const p = page('', { src: '/prfchs', document: screen.document });
+    p.press('Escape');
+    assert.deepEqual(screen.received, ['BrowserBack']);
+    assert.deepEqual(p.fetched, []);
+});
+
+test('tela de componente de outra origem: as teclas vao por postMessage, so a origem dela; Home vai a plataforma', () => {
+    const p = page('', { src: SCREEN_URL, document: null });
+    p.press('Escape');
+    p.press('a');
+    p.press('Home');
+    assert.deepEqual(p.posted.map((m) => [m.message.key, m.origin, m.frame]), [
+        ['BrowserBack', SCREEN_ORIGIN, 'rxgui'],
+        ['a', SCREEN_ORIGIN, 'rxgui'],
+    ]);
+    assert.deepEqual(p.fetched, ['keydown/36']);
+});
+
+test('Back nao cancelado pela tela de componente, devolvido pela ponte, vai a plataforma como Escape', () => {
+    const p = page('', { src: SCREEN_URL, document: null });
+    p.message({ type: 'tv30-aop-back' }, SCREEN_ORIGIN, p.screenWindow);
+    p.message({ type: 'tv30-aop-back' }, 'http://outra.test', p.screenWindow);
+    assert.deepEqual(p.fetched, ['keydown/27']);
 });

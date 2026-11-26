@@ -17,11 +17,16 @@ const HLS_TYPE = 'application/x-mpegURL';
 // 27: Escape; 33, 34: PageUp, PageDown; 36: Home; 93: ContextMenu.
 const KEY_ESCAPE = 27;
 const PLATFORM_KEYS = [KEY_ESCAPE, 33, 34, 36, 93];
-// With a broadcaster application running, Escape goes to it as Back and
-// ContextMenu as Menu (ABNT NBR 25608, 10.6.3 and Table B.1).
+// Escape goes as Back and ContextMenu as Menu (ABNT NBR 25608, 10.6.3 and
+// Table B.1) to the broadcaster application running or, without one, to the
+// screen of the interface layer.
 const APPLICATION_KEYS = { Escape: 'BrowserBack', ContextMenu: 'ContextMenu' };
-// The Back the application did not cancel, from the bridge in its document.
+const BACK_KEY = 'BrowserBack';
+// The Back the application or the screen did not cancel, from the bridge in
+// its document.
 const BACK_MESSAGE_TYPE = 'tv30-aop-back';
+const EVENT_MESSAGE_TYPE = 'tv30-aop-event';
+const LAYER_FRAMES = ['graphics', 'rxgui'];
 const HLS_MASTER_TAG = '#EXT-X-STREAM-INF';
 const HLS_MEDIA_TAG = '#EXT-X-MEDIA:';
 const HLS_MAP_TAG = '#EXT-X-MAP';
@@ -297,15 +302,35 @@ function relayKey(event) {
     event.preventDefault();
     const applicationKey = APPLICATION_KEYS[event.key];
     const graphicsRunning = $('#graphics').attr('src') !== '';
+    const interfaceShown = $('#rxgui').attr('src') !== '';
     if (graphicsRunning && applicationKey !== undefined) {
         graphicsEvent('keydown', { key: applicationKey });
+    } else if (interfaceShown && applicationKey !== undefined) {
+        interfaceKey(applicationKey);
     } else if (PLATFORM_KEYS.includes(event.keyCode)) {
         sendPlatformKey(event.keyCode);
-    } else if ($('#rxgui').attr('src') !== '') {
-        const keydown = new KeyboardEvent('keydown', { key: event.key });
-        $('#rxgui').contents()[0].dispatchEvent(keydown);
+    } else if (interfaceShown) {
+        interfaceKey(event.key);
     } else if (graphicsRunning) {
         graphicsEvent('keydown', { key: event.key });
+    }
+}
+
+// The key to the screen of the interface layer: on its document, when it is
+// of the origin of the page; otherwise by postMessage, to the bridge the
+// screen includes (/js/interface-bridge.js). A Back the screen does not
+// cancel goes to the platform as Escape.
+function interfaceKey(key) {
+    const frame = document.getElementById('rxgui');
+    const screenDocument = frameDocument(frame);
+    if (screenDocument === null) {
+        postLayerEvent(frame, 'keydown', { key });
+        return;
+    }
+    const keydown = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+    const notCanceled = screenDocument.dispatchEvent(keydown);
+    if (key === BACK_KEY && notCanceled) {
+        sendPlatformKey(KEY_ESCAPE);
     }
 }
 
@@ -314,28 +339,36 @@ function relayKey(event) {
 // its document. While the initial document (about:blank) of the frame is
 // there, there is nothing to notify.
 function graphicsEvent(name, init) {
-    const frame = document.getElementById('graphics');
+    postLayerEvent(document.getElementById('graphics'), name, init);
+}
+
+// The event to the document of the frame, by postMessage, only to its
+// origin.
+function postLayerEvent(frame, name, init) {
     if (!frame.getAttribute('src') || !frame.contentWindow || frameDocument(frame)) {
         return;
     }
     const target = new URL(frame.src, window.location.href).origin;
-    const message = Object.assign({ type: 'tv30-aop-event', event: name }, init);
+    const message = Object.assign({ type: EVENT_MESSAGE_TYPE, event: name }, init);
     frame.contentWindow.postMessage(message, target);
 }
 
-// A Back the application did not cancel does what Escape does without it.
-function onGraphicsMessage(event) {
-    const frame = document.getElementById('graphics');
-    if (!frame.getAttribute('src') || event.source !== frame.contentWindow) {
-        return;
-    }
-    if (event.origin !== new URL(frame.src, window.location.href).origin) {
-        return;
-    }
+// A Back the application or the screen of a component did not cancel does
+// what Escape does without them.
+function onLayerMessage(event) {
     if (!event.data || event.data.type !== BACK_MESSAGE_TYPE) {
         return;
     }
-    sendPlatformKey(KEY_ESCAPE);
+    const fromLayer = LAYER_FRAMES.some((id) => {
+        const frame = document.getElementById(id);
+        if (!frame.getAttribute('src') || event.source !== frame.contentWindow) {
+            return false;
+        }
+        return event.origin === new URL(frame.src, window.location.href).origin;
+    });
+    if (fromLayer) {
+        sendPlatformKey(KEY_ESCAPE);
+    }
 }
 
 // The key goes to the platform (graphic-overlays, keydown/<keyCode>); a
@@ -362,6 +395,6 @@ function randomHex(bytes) {
 }
 
 document.addEventListener('keydown', relayKey);
-window.addEventListener('message', onGraphicsMessage);
+window.addEventListener('message', onLayerMessage);
 connect();
 document.getElementById('popup').style.display = 'none';

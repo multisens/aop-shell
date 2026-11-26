@@ -794,7 +794,7 @@
             const isModalOpen = modal.style.display === 'flex';
 
             if (isModalOpen) {
-                if (e.key === 'Escape') {
+                if (e.key === 'BrowserBack') {
                     closeAvatarModal();
                 } else if (e.key === 'Enter') {
                     confirmAvatar();
@@ -813,7 +813,8 @@
                 return;
             }
 
-            if (e.key === 'Escape') {
+            if (e.key === 'BrowserBack') {
+                e.preventDefault();
                 window.location.href = '/prfchs';
                 return;
             }
