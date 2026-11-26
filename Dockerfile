@@ -3,9 +3,7 @@
 FROM node:23-alpine
 WORKDIR /app
 COPY package*.json ./
-# Without --omit=dev: src/mqtt-ws.js requires http-proxy-middleware, listed in
-# devDependencies.
-RUN npm ci && npm cache clean --force
+RUN npm ci --omit=dev && npm cache clean --force
 ENV NODE_ENV=production
 COPY src ./src
 COPY public ./public
