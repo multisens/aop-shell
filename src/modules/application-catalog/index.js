@@ -10,7 +10,7 @@ const router = express.Router();
 router.get('/', async (req, res) => {
     const html = await ejs.renderFile(path.join(__dirname, 'view.ejs'), {
         cards: await service.cards(),
-        profile: service.profile(),
+        profile: await service.profile(),
         basepath: core.GUI.app_catalogue,
     });
     res.send(html);

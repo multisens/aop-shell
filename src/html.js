@@ -30,19 +30,6 @@ function svgDocument(svg) {
     return svgProblem(svg) ? '' : svg.trim();
 }
 
-// SVG the AoP itself writes (profile avatar): adds the xmlns when the form
-// sends it without one. '' if there is no <svg> element.
-function withSvgNamespace(svg) {
-    if (typeof svg !== 'string') return '';
-    let doc = svg.trim();
-    const root = /<svg(?=[\s/>])[^>]*>/.exec(doc);
-    if (!root) return '';
-    if (!/\sxmlns\s*=/.test(root[0])) {
-        doc = `${doc.slice(0, root.index)}<svg xmlns="${SVG_NS}"${doc.slice(root.index + 4)}`;
-    }
-    return svgDocument(doc);
-}
-
 // Text with SVG to an image data: URL; '' if there is no <svg> element.
 function svgDataUri(svg) {
     const doc = svgDocument(svg);
@@ -77,4 +64,4 @@ function cssHexColor(value, fallback, { alpha = false } = {}) {
     return typeof value === 'string' && re.test(value) ? value : fallback;
 }
 
-module.exports = { escapeHtml, svgProblem, svgDocument, withSvgNamespace, svgDataUri, imageHtml, svgImageHtml, cssHexColor, SVG_NS };
+module.exports = { escapeHtml, svgProblem, svgDocument, svgDataUri, imageHtml, svgImageHtml, cssHexColor, SVG_NS };

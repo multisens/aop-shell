@@ -8,7 +8,7 @@ const path = require('path');
 const Module = require('module');
 const express = require('express');
 
-const { escapeHtml, svgDataUri, svgImageHtml, svgProblem, withSvgNamespace, SVG_NS } = require('../src/html');
+const { escapeHtml, svgDataUri, svgImageHtml, svgProblem, SVG_NS } = require('../src/html');
 
 // --- data --------------------------------------------------------------------
 const INJ = tag => `window.__injetado=(window.__injetado||[]).concat('${tag}')`;
@@ -24,15 +24,13 @@ const HOSTILE = {
 };
 const SAMPLE = { globalServiceId: 'urn:amostra:uff', appName: 'UFF TV', appIcon: SAMPLE_ICON, appDescription: 'A TV', backgroundColor: '#282828', foregroundColor: '#c8c8c8' };
 const HOSTILE_AVATAR = `<svg xmlns="${SVG_NS}" viewBox="0 0 100 100" onload="${INJ('avatar')}"><script>${INJ('avatar-script')}</script></svg>`;
-// The avatar field names a file of <USER_DATA_PATH>/thumbs; the hostile SVG
-// lives in hostil.svg.
-const fs = require('fs');
-const os = require('os');
-const USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'aop-views-'));
-process.env.USER_DATA_PATH = USER_DATA;
-const THUMBS = path.join(USER_DATA, 'thumbs');
-fs.mkdirSync(THUMBS);
-fs.writeFileSync(path.join(THUMBS, 'hostil.svg'), HOSTILE_AVATAR);
+// The avatar field names an image of the set (avatar:{name}, in a double of
+// Redis); the hostile SVG is the image hostil.svg.
+const SVG_TYPE = 'image/svg+xml';
+const avatarStore = new Map([['avatar:hostil.svg', { label: 'Hostil', type: SVG_TYPE, body: HOSTILE_AVATAR }]]);
+const redisFile = require.resolve('../src/redis-client');
+const mr = new Module(redisFile); mr.filename = redisFile; mr.loaded = true; require.cache[redisFile] = mr;
+mr.exports = { async hgetall(k) { return { ...(avatarStore.get(k) || {}) }; } };
 const users = [
     { id: '0b6f3e2a-7c1d-4e5f-9a8b-2c3d4e5f6a7b', name: 'Maria', avatar: null },
     { id: '9d8c7b6a-5e4f-4a3b-8c2d-1e0f9a8b7c6d', name: '<svg/onload=alert()>', avatar: 'hostil.svg' },
@@ -72,7 +70,6 @@ before(async () => {
     base = `http://127.0.0.1:${server.address().port}`;
 });
 after(() => new Promise(r => server.close(r)));
-after(() => fs.rmSync(USER_DATA, { recursive: true, force: true }));
 
 const page = async route => {
     const res = await fetch(`${base}${route}`);
@@ -117,12 +114,6 @@ test('svgDataUri: so SVG no namespace do SVG; sem xmlns, ou com outro, recusado 
         assert.equal(svgDataUri(v), '', String(v));
         assert.notEqual(svgProblem(v), '', String(v));
     }
-});
-
-test('withSvgNamespace: o SVG que o proprio AoP grava (avatar) ganha o xmlns quando falta', () => {
-    assert.equal(withSvgNamespace(ICON_NO_NS), ICON_NO_NS.replace('<svg ', `<svg xmlns="${SVG_NS}" `));
-    assert.equal(withSvgNamespace(SAMPLE_ICON), SAMPLE_ICON);
-    assert.equal(withSvgNamespace('<img src=x>'), '');
 });
 
 test('svgImageHtml: icone recusado nao e exibido e sai no log com o motivo, uma vez', () => {
@@ -242,61 +233,31 @@ test('confirmacao de remocao: nickname e erro entram por texto; um POST com o id
     assert.equal(state.focused, 'remove1', 'o foco volta a opcao de remover');
 });
 
-// avatarHtml embeds the file named in the field in <img src=data:>, with the
-// type by extension; without a file or out of format (inline SVG included),
-// the default.
-test('avatarHtml: arquivo do avatar ou o padrao, sempre em <img class="avatar">; SVG em linha e nome fora do formato caem no padrao', () => {
-    const { avatarHtml, DEFAULT_AVATAR_SVG, AVATAR_COLORS, MAX_AVATAR_BYTES } = require('../src/modules/profile-manager/avatar');
+// avatarHtml embeds the image of the set named in the field in
+// <img src=data:>; without an image, with a type other than SVG or an SVG
+// refused, the default.
+test('avatarHtml: imagem do conjunto ou o padrao, sempre em <img class="avatar">', async () => {
+    const { avatarHtml, DEFAULT_AVATAR_SVG } = require('../src/modules/profile-manager/avatar');
     const only = html => {
         const s = [...html.matchAll(/<img src="(data:[^"]+)"/g)].map(x => x[1]);
         assert.equal(s.length, 1, html);
         assert.match(html, / class="avatar"/);
         return s[0];
     };
-    const svgOf = html => decode(only(html));
-    const put = (name, data) => fs.writeFileSync(path.join(THUMBS, name), data);
+    const svgOf = async name => decode(only(await avatarHtml(name)));
 
-    put('cor.svg', AVATAR_COLORS[2].svg);
-    assert.equal(svgOf(avatarHtml('cor.svg')), AVATAR_COLORS[2].svg);
-    assert.equal(svgOf(avatarHtml('hostil.svg')), HOSTILE_AVATAR);
-    // SVG without xmlns in the file (the AoP writes it with one): refused as
-    // the BAM icon, the default applies.
-    put('sem-ns.svg', '<svg viewBox="0 0 1 1"/>');
-    assert.equal(svgOf(avatarHtml('sem-ns.svg')), DEFAULT_AVATAR_SVG);
-    // The other extensions of the contract: type by extension, bytes intact.
-    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x10]);
-    for (const [name, mime] of [['p.png', 'image/png'], ['j.jpg', 'image/jpeg'], ['k.jpeg', 'image/jpeg'], ['w.webp', 'image/webp']]) {
-        put(name, bytes);
-        assert.equal(only(avatarHtml(name)), `data:${mime};base64,${bytes.toString('base64')}`, name);
+    avatarStore.set('avatar:cor.svg', { label: 'Cor', type: SVG_TYPE, body: SAMPLE_ICON });
+    assert.equal(await svgOf('cor.svg'), SAMPLE_ICON);
+    assert.equal(await svgOf('hostil.svg'), HOSTILE_AVATAR);
+
+    // The default: absent, outside the set, another type, SVG without xmlns,
+    // without <svg>.
+    avatarStore.set('avatar:p.svg', { label: 'P', type: 'image/png', body: SAMPLE_ICON });
+    avatarStore.set('avatar:sem-ns.svg', { label: 'S', type: SVG_TYPE, body: ICON_NO_NS });
+    avatarStore.set('avatar:vazio.svg', { label: 'V', type: SVG_TYPE, body: 'nao e svg' });
+    for (const v of [null, undefined, '', 'nao-existe.svg', 'p.svg', 'sem-ns.svg', 'vazio.svg', HOSTILE_AVATAR]) {
+        assert.equal(await svgOf(v), DEFAULT_AVATAR_SVG, JSON.stringify(v));
     }
-
-    // The default: absent, inline SVG, name out of format, nonexistent file,
-    // SVG without <svg>, directory, above the limit.
-    put('vazio.svg', 'nao e svg');
-    put('grande.svg', `<svg xmlns="${SVG_NS}">${' '.repeat(MAX_AVATAR_BYTES)}</svg>`);
-    fs.mkdirSync(path.join(THUMBS, 'pasta.svg'));
-    fs.writeFileSync(path.join(USER_DATA, 'fora.svg'), AVATAR_COLORS[4].svg);
-    put('x.gif', 'GIF');
-    put('.oculto.svg', AVATAR_COLORS[5].svg);
-    // ...without an error line in the log: none of these is a platform
-    // failure.
-    const logs = [];
-    const errorOrig = console.error;
-    console.error = (...a) => logs.push(a.join(' '));
-    try {
-        for (const v of [null, undefined, '', 42, AVATAR_COLORS[2].svg, HOSTILE_AVATAR, '<img src=x onerror=alert(1)>',
-            'nao-existe.svg', 'vazio.svg', 'grande.svg', 'pasta.svg', '../fora.svg', 'thumbs/../fora.svg', '/cor.svg', 'sub/cor.svg',
-            '..\\fora.svg', 'x.gif', '.oculto.svg', 'cor.SVG', 'cor.svg ', `${'a'.repeat(129)}.svg`]) {
-            assert.equal(svgOf(avatarHtml(v)), DEFAULT_AVATAR_SVG, JSON.stringify(v));
-        }
-    } finally { console.error = errorOrig; }
-    assert.deepEqual(logs, []);
-    // A symbolic link outside the directory: the default (on Windows without
-    // link privilege, the creation fails and the case does not run).
-    let linked = false;
-    // Without link privilege, symlinkSync throws.
-    try { fs.symlinkSync(path.join(USER_DATA, 'fora.svg'), path.join(THUMBS, 'link.svg')); linked = true; } catch { }
-    if (linked) assert.equal(svgOf(avatarHtml('link.svg')), DEFAULT_AVATAR_SVG, 'link para fora');
 });
 
 // --- colors in <style> and id in the query -----------------------------------

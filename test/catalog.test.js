@@ -4,15 +4,9 @@
 // state in services:announced with Redis by a double.
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const Module = require('module');
 const express = require('express');
-
-const USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'aop-catalog-'));
-process.env.USER_DATA_PATH = USER_DATA;
-after(() => fs.rmSync(USER_DATA, { recursive: true, force: true }));
 
 // --- doubles -----------------------------------------------------------------
 // services:announced as a Map; tipoErrado makes HGETALL answer WRONGTYPE,

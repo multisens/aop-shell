@@ -5,7 +5,7 @@
 const crypto = require('crypto');
 const redis = require('../../redis-client');
 const redisFunctions = require('../../redis-functions');
-const avatarFiles = require('./avatar');
+const avatars = require('./avatar');
 
 const VALID_RATINGS = ['L', '10', '12', '14', '16', '18'];
 const VALID_SIDES = ['left', 'right'];
@@ -79,6 +79,17 @@ async function touchLastAccess(id, now = Date.now()) {
     return redisFunctions.profileLastAccess(String(id), String(now));
 }
 
+// The avatar of the form: absent, or the name of an image of the set.
+async function validAvatar(name) {
+    if (name === undefined || name === null || name === '') {
+        return undefined;
+    }
+    if (typeof name !== 'string' || !(await avatars.avatarExists(name))) {
+        throw new ValidationError('avatar deve ser uma das imagens do conjunto de avatares');
+    }
+    return name;
+}
+
 // 10.3.3: at most five profiles, checked by the Redis function that writes
 // (users:index in the schema); the sixth is refused and none is evicted.
 async function createProfile(userData) {
@@ -99,13 +110,13 @@ async function createProfile(userData) {
         accessConsent.push(currentService);
     }
 
-    // The avatar is the NAME of the file <USER_DATA_PATH>/thumbs/<id>.svg; an
-    // absent or invalid SVG of the form writes the default (./avatar.js).
-    const avatarDoc = avatarFiles.avatarSvg(userData.avatar);
+    // The avatar is the name of an image of the set (./avatar.js); absent,
+    // the profile has no avatar.
+    const avatar = await validAvatar(userData.avatar);
     const newUser = {
         id: userId,
         nickname,
-        avatar: avatarFiles.avatarFileName(userId),
+        avatar,
         parentalControl,
         maxContentRating: parentalControl ? userData.maxContentRating : null,
         audioLanguage: userData.audioLanguage || 'pt-BR',
@@ -125,14 +136,9 @@ async function createProfile(userData) {
     for (const [k, v] of Object.entries(newUser)) {
         if (v !== null && v !== undefined) hashFields[k] = String(v);
     }
-    // The file first, so that the avatar never names a nonexistent file; a
-    // failure writing the profile deletes the file and is thrown.
-    await avatarFiles.writeAvatarFile(userId, avatarDoc);
     try {
         await redisFunctions.profileWrite(userId, accessConsent, hashFields);
     } catch (err) {
-        await avatarFiles.removeAvatarFile(userId)
-            .catch(e => console.error(`[profiles] perfil ${userId} nao gravado; o arquivo do avatar ficou: ${e.message}`));
         const teto = redisFunctions.profileLimitOf(err);
         if (teto !== null) throw new ValidationError(`O limite de ${teto} perfis foi atingido. O perfil não foi criado.`);
         throw err;
@@ -178,24 +184,14 @@ function ensureDefaultProfile() {
 }
 
 // Removal by the viewer; messages in the language of the profile choice
-// screen. The avatar file goes after the profile, unless another profile
-// uses it.
+// screen.
 function removeProfile(id) {
     return emSerie(async () => {
         const ids = await redis.smembers('users:index');
         if (!id || !ids.includes(id)) throw new ValidationError('This profile no longer exists.');
         if (ids.length < 2) throw new ValidationError('The only registered profile cannot be removed.');
 
-        const { avatar } = await redis.hgetall(`user:${id}`);
         await redisFunctions.profileRemove(id);
-
-        const others = await Promise.all(ids.filter(x => x !== id).map(x => redis.hgetall(`user:${x}`)));
-        const inUse = new Set(others.map(h => h.avatar));
-        for (const name of new Set([avatar, avatarFiles.avatarFileName(id)])) {
-            if (!name || inUse.has(name)) continue;
-            await avatarFiles.unlinkAvatarFile(name)
-                .catch(e => console.error(`[profiles] perfil ${id} removido; o arquivo do avatar ${name} ficou: ${e.message}`));
-        }
         return { id };
     });
 }

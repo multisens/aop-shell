@@ -7,7 +7,7 @@ const logger = require('./logger');
 const appHosts = require('./app-hosts');
 const mqttWs = require('./mqtt-ws');
 
-const REQUIRED = ['MQTT_HOST', 'USER_DATA_PATH', 'REDIS_HOST'];
+const REQUIRED = ['MQTT_HOST', 'REDIS_HOST'];
 const DEFAULT_PORT = 8080;
 
 function assertRequired() {

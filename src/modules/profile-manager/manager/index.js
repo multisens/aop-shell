@@ -5,13 +5,12 @@ const express = require('express');
 const path = require('path');
 const core = require('../../../core');
 const service = require('../service');
-const { DEFAULT_AVATAR_SVG, AVATAR_COLORS } = require('../avatar');
+const { avatarList } = require('../avatar');
 const router = express.Router();
 
 router.get('/create', async (req, res) => {
     const html = await ejs.renderFile(path.join(__dirname, 'view.ejs'), {
-        defaultAvatar: DEFAULT_AVATAR_SVG,
-        avatarColors: AVATAR_COLORS,
+        avatars: await avatarList(),
     });
     res.send(html);
 });

@@ -17,9 +17,9 @@ const HTTP_PROTOCOLS = ['http:', 'https:'];
 const MPD_EXTENSION = '.mpd';
 const HLS_EXTENSION = '.m3u8';
 
-function profile() {
+async function profile() {
     const user = core.getUserData(core.getCurrentUser());
-    return `<span>${escapeHtml(user.name || '')}</span>${avatarHtml(user.avatar)}`;
+    return `<span>${escapeHtml(user.name || '')}</span>${await avatarHtml(user.avatar)}`;
 }
 
 // initialMediaURL is the parameter of BpAFR-11, already checked

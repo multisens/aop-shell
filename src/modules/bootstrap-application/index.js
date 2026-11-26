@@ -21,7 +21,7 @@ router.get('/', async (req, res) => {
 
     const html = await ejs.renderFile(path.join(__dirname, 'view.ejs'),
         Object.assign({
-            profile: service.profile(),
+            profile: await service.profile(),
             basepath: core.GUI.bootstrap_app
         },
         service.bootstrapAppData(),

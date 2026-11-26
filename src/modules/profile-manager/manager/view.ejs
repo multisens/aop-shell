@@ -566,15 +566,14 @@
             }
         }
 
-        // Palette and default avatar: ../avatar.js.
-        const AVATAR_COLORS = <%- JSON.stringify(avatarColors) %>;
-        const DEFAULT_AVATAR_SVG = <%- JSON.stringify(defaultAvatar) %>;
+        // The avatar set, { name, label, svg }: ../avatar.js.
+        const AVATARS = <%- JSON.stringify(avatars) %>;
 
-        let selectedAvatar = DEFAULT_AVATAR_SVG;
+        let selectedAvatar = AVATARS[0];
         let tempSelectedAvatar = null;
 
         function renderSelectedAvatarPreview() {
-            document.getElementById('selected-avatar').innerHTML = selectedAvatar;
+            document.getElementById('selected-avatar').innerHTML = selectedAvatar.svg;
         }
 
         function openAvatarSelection() {
@@ -593,24 +592,23 @@
             const grid = document.getElementById('avatar-grid');
             grid.innerHTML = '';
 
-            AVATAR_COLORS.forEach(({ svg, name }) => {
+            AVATARS.forEach((avatar) => {
                 const div = document.createElement('div');
                 div.className = 'avatar-option';
-                div.dataset.svg = svg;
-                if (svg === selectedAvatar || svg === tempSelectedAvatar) {
+                if (avatar === selectedAvatar || avatar === tempSelectedAvatar) {
                     div.classList.add('selected');
                 }
-                div.onclick = () => selectAvatarFromModal(svg, div);
-                div.innerHTML = svg + '<div class="avatar-name">' + name + '</div>';
+                div.onclick = () => selectAvatarFromModal(avatar, div);
+                div.innerHTML = avatar.svg + '<div class="avatar-name">' + avatar.label + '</div>';
                 grid.appendChild(div);
             });
         }
 
-        function selectAvatarFromModal(svg, element) {
+        function selectAvatarFromModal(avatar, element) {
             document.querySelectorAll('.avatar-option.selected').forEach(opt => opt.classList.remove('selected'));
             element.classList.add('selected');
-            tempSelectedAvatar = svg;
-            document.getElementById('selected-avatar').innerHTML = svg;
+            tempSelectedAvatar = avatar;
+            document.getElementById('selected-avatar').innerHTML = avatar.svg;
         }
 
         function confirmAvatar() {
@@ -664,7 +662,7 @@
             // Payload with the basic attributes of Table 7.
             const newProfile = {
                 nickname: name,
-                avatar: selectedAvatar,
+                avatar: selectedAvatar.name,
                 parentalControl,
                 maxContentRating,
                 audioLanguage,
@@ -712,7 +710,7 @@
             document.getElementById('closedCaptioningLanguage').style.display = 'none';
             document.getElementById('width-value').textContent = '28%';
             document.getElementById('maxContentRating').value = '';
-            selectedAvatar = DEFAULT_AVATAR_SVG;
+            selectedAvatar = AVATARS[0];
             renderSelectedAvatarPreview();
             focusStop(0);
         }

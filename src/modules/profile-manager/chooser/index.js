@@ -13,7 +13,7 @@ router.get('/', async (req, res, next) => {
 
     const html = await ejs.renderFile(path.join(__dirname, 'view.ejs'),
         {
-            cards: service.cards(),
+            cards: await service.cards(),
             basepath: core.GUI.profile_chooser,
             defaultAvatar: require('../avatar').DEFAULT_AVATAR_SVG
         });

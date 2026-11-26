@@ -20,9 +20,9 @@ async function cards() {
     return html;
 }
 
-function profile() {
+async function profile() {
     const user = core.getUserData(core.getCurrentUser());
-    return `<span>${escapeHtml(user.name || '')}</span>${avatarHtml(user.avatar)}`;
+    return `<span>${escapeHtml(user.name || '')}</span>${await avatarHtml(user.avatar)}`;
 }
 
 // The card i of count, with the navigation to its neighbors; a grouping

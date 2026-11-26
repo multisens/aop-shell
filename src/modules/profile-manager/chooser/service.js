@@ -6,7 +6,7 @@ const { avatarHtml } = require('../avatar');
 const { escapeHtml } = require('../../../html');
 
 
-function cards() {
+async function cards() {
 	var usr = core.getUserList();
 	var num = usr.length;
 	// The only registered profile cannot be removed: no option.
@@ -19,7 +19,7 @@ function cards() {
 		let down = removable ? ` movedown="remove${i}"` : '';
 
 		html += `<div id="card${i}" class="card" moveleft="${left}" moveright="${right}"${down} select="selectProfile" selectParam="${escapeHtml(usr[i].id)}">` +
-                    avatarHtml(usr[i].avatar) +
+                    await avatarHtml(usr[i].avatar) +
                     `<span>${escapeHtml(usr[i].name)}</span>` +
                     (removable
                         ? `<div id="remove${i}" class="remove" moveup="card${i}" moveleft="remove${(i + num - 1) % num}" moveright="remove${(i + 1) % num}" select="confirmRemoval" selectParam="${escapeHtml(usr[i].id)}">Remove</div>`

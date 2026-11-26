@@ -28,6 +28,14 @@ m.filename = coreFile;
 m.loaded = true;
 m.exports = fakeCore;
 require.cache[coreFile] = m;
+// Redis of the avatar set (../src/modules/profile-manager/avatar.js): no
+// image, the default icon.
+const redisFile = require.resolve('../src/redis-client');
+const mr = new Module(redisFile);
+mr.filename = redisFile;
+mr.loaded = true;
+mr.exports = { async hgetall() { return {}; } };
+require.cache[redisFile] = mr;
 
 const dash = require('../src/modules/dash-streams');
 const bootstrap = require('../src/modules/bootstrap-application/service');
