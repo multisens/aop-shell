@@ -44,9 +44,10 @@ function page(graphicsSrc, screen = { src: '', document: null }) {
         getAttribute: (name) => (name === 'src' ? screen.src : null),
     };
     const elements = { graphics, rxgui, popup: { style: {} }, video: {} };
-    const attrs = { '#graphics': graphicsSrc, '#rxgui': screen.src };
+    // The frames start without the src attribute: attr gives undefined.
+    const attrs = { '#graphics': graphicsSrc || undefined, '#rxgui': screen.src || undefined };
     const $ = (selector) => ({
-        attr: () => attrs[selector] ?? '',
+        attr: () => attrs[selector],
         length: 1,
         replaceWith() {},
         css() {},

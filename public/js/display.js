@@ -301,8 +301,8 @@ function relayKey(event) {
     }
     event.preventDefault();
     const applicationKey = APPLICATION_KEYS[event.key];
-    const graphicsRunning = $('#graphics').attr('src') !== '';
-    const interfaceShown = $('#rxgui').attr('src') !== '';
+    const graphicsRunning = layerShown('graphics');
+    const interfaceShown = layerShown('rxgui');
     if (graphicsRunning && applicationKey !== undefined) {
         graphicsEvent('keydown', { key: applicationKey });
     } else if (interfaceShown && applicationKey !== undefined) {
@@ -377,6 +377,12 @@ function sendPlatformKey(keyCode) {
     fetch(`keydown/${keyCode}`).catch((err) => {
         console.error(`Tecla ${keyCode} nao enviada a plataforma:`, err);
     });
+}
+
+// Whether the frame of the layer shows a page: the frames start without the
+// src attribute, and an empty src clears them.
+function layerShown(id) {
+    return Boolean($(`#${id}`).attr('src'));
 }
 
 // The document of the frame, or null when its origin is another one.
