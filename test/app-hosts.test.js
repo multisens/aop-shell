@@ -10,18 +10,19 @@ const path = require('path');
 const Module = require('module');
 const { EventEmitter } = require('events');
 
-// Fixed configuration: the core reads it once, when loaded.
-process.env.APPS_DOMAIN = 'apps.localhost';
-process.env.AOP_PUBLIC_PORT = '8080';
-process.env.OBJECT_PROXY_PUBLIC_PORT = '8081';
-
-const appHosts = require('../src/app-hosts');
+const USERS_INDEX = 'users:index';
+const CFG = { domain: 'apps.localhost', port: 8080, proxyPort: 8081 };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SID = 'urn:tv30:service:users-test';
+const SERVICE_ID = 1001;
+const GRAPHICS_APP = 'aop/application-lifecycle-manager/graphics-application';
+const END_REQUEST = 'aop/application-lifecycle-manager/end-request';
+const RECORD = JSON.stringify({ serviceId: SERVICE_ID, bsid: 10, bam: { globalServiceId: SID, appName: 'Users' } });
+const APP = { serviceContextId: SID, appId: 'urn:tv30:app:k1a2b3', origin: 'http://ctx-0123456789abcdef.apps.localhost:8081',
+    url: 'http://ctx-0123456789abcdef.apps.localhost:8081/index.html' };
 
 // --- doubles -----------------------------------------------------------------
-const FAIL = 'redis indisponivel (duble de teste)';
 const store = new Map();
-let down = false;
-const hashOf = k => (store.get(k) instanceof Map ? store.get(k) : new Map());
 // ['FCALL', function, ...args] of each write.
 const writes = [];
 const fakeRedis = {
@@ -29,95 +30,95 @@ const fakeRedis = {
     once() {},
     on() {},
 };
+// [topic, message, retained]
+const published = [];
+const fakeMqtt = new EventEmitter();
+// [filter] of each subscribe and unsubscribe.
+const subscribed = [];
+const unsubscribed = [];
+const realLog = console.log;
+const realError = console.error;
+
+// Fixed configuration: the core reads it once, when loaded.
+process.env.APPS_DOMAIN = 'apps.localhost';
+process.env.AOP_PUBLIC_PORT = '8080';
+process.env.OBJECT_PROXY_PUBLIC_PORT = '8081';
+const appHosts = require('../src/app-hosts');
+
 // The double mimics the EFFECT of the profile and catalog functions
 // (call('FCALL', function, 0, ...)), without checking the schema; the
 // lastAccess of an unknown profile gives 0.
-const INDICE = 'users:index';
-const indice = () => (store.get(INDICE) instanceof Set ? store.get(INDICE) : new Set());
-// [function, message]: the function answers as for data outside the schema.
-let recusa = null;
 for (const [name, fn] of Object.entries({
-    async call(cmd, nome, numkeys, ...args) {
-        if (cmd !== 'FCALL' || Number(numkeys) !== 0) throw new Error(`call ${cmd} ${numkeys}: nao suportado pelo duble`);
+    async call(cmd, fnName, numkeys, ...args) {
+        if (cmd !== 'FCALL' || Number(numkeys) !== 0) {
+            throw new Error(`call ${cmd} ${numkeys}: nao suportado pelo duble`);
+        }
         const a = args.map(String);
-        if (recusa && recusa[0] === nome) throw new Error(recusa[1]);
-        writes.push(['FCALL', nome, ...a]);
-        switch (nome) {
+        writes.push(['FCALL', fnName, ...a]);
+        switch (fnName) {
             case 'tv30_profile_write': {
                 const [id, n] = a;
-                const campos = new Map();
-                for (let i = 2 + Number(n); i + 1 < a.length; i += 2) campos.set(a[i], a[i + 1]);
-                store.set(INDICE, indice().add(id));
-                store.set(`user:${id}`, campos);
+                store.set(USERS_INDEX, usersIndex().add(id));
+                store.set(`user:${id}`, pairsOf(a, 2 + Number(n)));
                 return 1;
             }
-            case 'tv30_profile_last_access': return indice().has(a[0]) ? 1 : 0;
+            case 'tv30_profile_last_access':
+                return usersIndex().has(a[0]) ? 1 : 0;
             // The Application Catalog, rewritten at each scan marker.
             case 'tv30_announced_services': {
-                const catalogo = new Map();
-                for (let i = 0; i + 1 < a.length; i += 2) catalogo.set(a[i], a[i + 1]);
-                store.set('services:announced', catalogo);
-                return catalogo.size;
+                const catalog = pairsOf(a, 0);
+                store.set('services:announced', catalog);
+                return catalog.size;
             }
             // The session, written before the topic is published.
             case 'tv30_session_user':
                 store.set('session:current-user', a[0]);
                 return 1;
             case 'tv30_session_service': {
-                const campos = new Map();
-                for (let i = 0; i + 1 < a.length; i += 2) campos.set(a[i], a[i + 1]);
-                store.set('session:current-service', campos);
-                store.set('session:current-service-id', campos.get('serviceContextId') || '');
+                const fields = pairsOf(a, 0);
+                store.set('session:current-service', fields);
+                store.set('session:current-service-id', fields.get('serviceContextId') || '');
                 return 1;
             }
-            default: throw new Error('ERR Function not found');
+            default:
+                throw new Error('ERR Function not found');
         }
     },
-    async smembers(k) { return k === INDICE ? [...indice()] : []; },
-    async hgetall(k) { return Object.fromEntries(hashOf(k)); },
-    async hget(k, f) { return hashOf(k).has(f) ? hashOf(k).get(f) : null; },
+    async smembers(k) {
+        return k === USERS_INDEX ? [...usersIndex()] : [];
+    },
+    async hgetall(k) {
+        return Object.fromEntries(hashOf(k));
+    },
+    async hget(k, f) {
+        return hashOf(k).has(f) ? hashOf(k).get(f) : null;
+    },
 })) {
-    fakeRedis[name] = async (...args) => { if (down) throw new Error(FAIL); return fn(...args); };
+    fakeRedis[name] = fn;
 }
-
-// [topic, message, retained]
-const published = [];
-const fakeMqtt = new EventEmitter();
-fakeMqtt.publish = (t, m, o) => { published.push([t, String(m), !!(o && o.retain)]); };
-// [filter] of each subscribe and unsubscribe.
-const subscribed = [];
-const unsubscribed = [];
-fakeMqtt.subscribe = (filter) => { subscribed.push(filter); };
-fakeMqtt.unsubscribe = (filter) => { unsubscribed.push(filter); };
-const lastGraphics = () => {
-    const g = published.filter(([t]) => t === 'aop/display/layers/graphics');
-    return g.length ? g[g.length - 1][1] : undefined;
+fakeMqtt.publish = (t, m, o) => {
+    published.push([t, String(m), !!(o && o.retain)]);
 };
-
-function stubFile(file, exports) {
-    const m = new Module(file);
-    m.filename = file;
-    m.loaded = true;
-    m.exports = exports;
-    require.cache[file] = m;
-}
+fakeMqtt.subscribe = (filter) => {
+    subscribed.push(filter);
+};
+fakeMqtt.unsubscribe = (filter) => {
+    unsubscribed.push(filter);
+};
 stubFile(require.resolve(path.join(__dirname, '..', 'src', 'redis-client')), fakeRedis);
 stubFile(require.resolve('mqtt'), { connect: () => fakeMqtt });
-
-const realLog = console.log;
-const realError = console.error;
 // The core logs connection, profiles and proxy.
 console.log = () => undefined;
 console.error = () => undefined;
-after(() => { console.log = realLog; console.error = realError; });
-
+after(() => {
+    console.log = realLog;
+    console.error = realError;
+});
 const core = require('../src/core');
 const bootstrap = require('../src/modules/bootstrap-application/service');
 fakeMqtt.emit('connect');
 
 // --- origins ----------------------------------------------------------------
-const CFG = { domain: 'apps.localhost', port: 8080, proxyPort: 8081 };
-
 test('appsConfig: padrao apps.localhost, porta PORT ou 8080 e 8081 da comporta; valor invalido lanca erro', () => {
     assert.deepEqual({ ...appHosts.appsConfig({}) }, CFG);
     assert.deepEqual({ ...appHosts.appsConfig({ PORT: '8099' }) }, { ...CFG, port: 8099 });
@@ -147,49 +148,35 @@ test('hostLabel: so o que esta no dominio das aplicacoes; porta e caixa nao impo
 });
 
 // --- current profile (core) --------------------------------------------------
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-async function ate(cond) {
-    for (let i = 0; i < 200 && !cond(); i++) await new Promise(r => setTimeout(r, 5));
-    assert.ok(cond(), 'condicao nao atingida');
-}
-function perfilNoDuble(id, nickname) {
-    store.set(INDICE, indice().add(id));
-    store.set(`user:${id}`, new Map([['id', id], ['nickname', nickname]]));
-}
-function tiraDoDuble(id) {
-    indice().delete(id);
-    store.delete(`user:${id}`);
-}
-
 test('boot com a base sem perfil: o gestor cria o perfil padrao (Viewer 1, id UUID), que vira o perfil corrente', async () => {
-    await ate(() => core.getUserList().length === 1 && core.getCurrentUser() !== '');
+    await waitUntil(() => core.getUserList().length === 1 && core.getCurrentUser() !== '');
     const [u] = core.getUserList();
     assert.equal(u.name, 'Viewer 1');
     assert.match(u.id, UUID_RE);
     assert.equal(core.getCurrentUser(), u.id);
-    const grava = writes.filter(w => w[1] === 'tv30_profile_write');
-    assert.equal(grava.length, 1, 'um perfil padrao so');
-    assert.equal(grava[0][3], '0', 'sem visibilidade para servico algum');
+    const profileWrites = writes.filter(w => w[1] === 'tv30_profile_write');
+    assert.equal(profileWrites.length, 1, 'um perfil padrao so');
+    assert.equal(profileWrites[0][3], '0', 'sem visibilidade para servico algum');
     assert.ok(published.some(([t, m, ret]) => t === 'aop/currentUser' && m === u.id && ret));
 });
 
 test('remocao do perfil corrente: aop/currentUser vazio (retido), aop/removedUser com o id e volta ao seletor; o corrente passa ao escolhido', async () => {
-    const atual = core.getCurrentUser();
+    const current = core.getCurrentUser();
     const B = '5a9d2f4e-1c3b-4d6a-8e7f-9b0c1d2e3f4a';
     const C = '9d8c7b6a-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
-    perfilNoDuble(B, 'B');
-    perfilNoDuble(C, 'C');
+    addProfile(B, 'B');
+    addProfile(C, 'C');
     await core.refreshUserData();
     assert.equal(core.getUserList().length, 3);
 
     // Storage no longer has the profile (tv30_profile_remove) when the core is
     // told.
-    tiraDoDuble(atual);
+    removeProfile(current);
     let n0 = published.length;
-    await core.profileRemoved(atual);
+    await core.profileRemoved(current);
     assert.deepEqual(published.slice(n0), [
         ['aop/currentUser', '', true],
-        ['aop/removedUser', atual, false],
+        ['aop/removedUser', current, false],
         ['aop/display/layers/rxgui', '/prfchs', false],
     ]);
     assert.equal(core.getCurrentUser(), '');
@@ -206,23 +193,13 @@ test('remocao do perfil corrente: aop/currentUser vazio (retido), aop/removedUse
     assert.deepEqual(published.at(-1), ['aop/currentUser', B, true]);
 
     // A profile that is not the current one: aop/currentUser stays.
-    tiraDoDuble(C);
+    removeProfile(C);
     n0 = published.length;
     await core.profileRemoved(C);
     assert.deepEqual(published.slice(n0), [['aop/removedUser', C, false], ['aop/display/layers/rxgui', '/prfchs', false]]);
     assert.equal(core.getCurrentUser(), B);
     assert.deepEqual(core.getUserList().map(u => u.id), [B]);
 });
-
-const SID = 'urn:tv30:service:users-test';
-const SERVICE_ID = 1001;
-const GRAPHICS_APP = 'aop/application-lifecycle-manager/graphics-application';
-const END_REQUEST = 'aop/application-lifecycle-manager/end-request';
-const RECORD = JSON.stringify({ serviceId: SERVICE_ID, bsid: 10, bam: { globalServiceId: SID, appName: 'Users' } });
-const APP = { serviceContextId: SID, appId: 'urn:tv30:app:k1a2b3', origin: 'http://ctx-0123456789abcdef.apps.localhost:8081',
-    url: 'http://ctx-0123456789abcdef.apps.localhost:8081/index.html' };
-const lastOf = (topic) => published.filter(([t]) => t === topic).at(-1);
-const graphicsApp = (app) => fakeMqtt.emit('message', GRAPHICS_APP, Buffer.from(app ? JSON.stringify(app) : ''));
 
 test('aplicacao do gerente de ciclo de vida: substitui a Bootstrap, com o video em tela cheia', async () => {
     store.set('services:announced', new Map([[SID, RECORD]]));
@@ -273,19 +250,19 @@ test('SLS do servico corrente: so a MPD vai a aop-dash-streams; a BALD nao e lid
 });
 
 test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava services:announced e publica aop/services retido; o servico corrente vem do catalogo, com o serviceId do SLS', async () => {
-    const servicos = () => published.filter(([t]) => t === 'aop/services');
+    const servicesPublished = () => published.filter(([t]) => t === 'aop/services');
     // At startup, the stored catalog (empty).
-    await ate(() => servicos().length > 0);
-    assert.deepEqual(servicos()[0], ['aop/services', '[]', true]);
+    await waitUntil(() => servicesPublished().length > 0);
+    assert.deepEqual(servicesPublished()[0], ['aop/services', '[]', true]);
     const BAM = { globalServiceId: SID, appVersion: 1, appName: 'Users', appIcon: '<svg/>', bannerIcon: '<svg/>', backgroundColor: '#000000', foregroundColor: '#ffffff' };
     const SLT = { bsid: [10], bandwidth: 6, Service: [{ serviceId: SERVICE_ID, globalServiceId: SID, serviceCategory: 30,
         majorChannelNo: 10, minorChannelNo: 1, mainAvOverTheAir: true, receptionQuality: 80 }] };
-    const marco = rf => Buffer.from(JSON.stringify({ completedAt: '2026-01-01T00:00:00Z', rfChannels: rf }));
+    const scanMark = rf => Buffer.from(JSON.stringify({ completedAt: '2026-01-01T00:00:00Z', rfChannels: rf }));
     fakeMqtt.emit('message', 'tlm/lls/10/slt', Buffer.from(JSON.stringify(SLT)));
     fakeMqtt.emit('message', 'tlm/lls/10/bamt', Buffer.from(JSON.stringify({ BAM: [BAM] })));
-    fakeMqtt.emit('message', 'tlm/scan', marco([10]));
-    await ate(() => servicos().at(-1)[1] !== '[]');
-    assert.deepEqual(servicos().at(-1), ['aop/services', JSON.stringify([{ serviceContextId: SID }]), true]);
+    fakeMqtt.emit('message', 'tlm/scan', scanMark([10]));
+    await waitUntil(() => servicesPublished().at(-1)[1] !== '[]');
+    assert.deepEqual(servicesPublished().at(-1), ['aop/services', JSON.stringify([{ serviceContextId: SID }]), true]);
     assert.deepEqual([...store.get('services:announced').keys()], [SID]);
     assert.equal(JSON.parse(store.get('services:announced').get(SID)).bsid, 10);
     await core.setCurrentService(SID);
@@ -304,8 +281,8 @@ test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava service
     // BAMT removed from a channel still detected: the service leaves the
     // catalog.
     fakeMqtt.emit('message', 'tlm/lls/10/bamt', Buffer.from(''));
-    fakeMqtt.emit('message', 'tlm/scan', marco([10]));
-    await ate(() => servicos().at(-1)[1] === '[]');
+    fakeMqtt.emit('message', 'tlm/scan', scanMark([10]));
+    await waitUntil(() => servicesPublished().at(-1)[1] === '[]');
     assert.equal(store.get('services:announced').size, 0);
     await core.unsetCurrentService();
     assert.equal(store.get('session:current-service-id'), '');
@@ -314,3 +291,59 @@ test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava service
     assert.deepEqual(published.filter(([t]) => t === 'tlm/tuned').at(-1), ['tlm/tuned', '', true]);
     fakeMqtt.emit('message', 'tlm/lls/10/slt', Buffer.from(''));
 });
+
+// --- helpers -----------------------------------------------------------------
+function hashOf(k) {
+    return store.get(k) instanceof Map ? store.get(k) : new Map();
+}
+
+function usersIndex() {
+    return store.get(USERS_INDEX) instanceof Set ? store.get(USERS_INDEX) : new Set();
+}
+
+// Field and value pairs of the arguments from a[i].
+function pairsOf(a, i) {
+    const fields = new Map();
+    for (let k = i; k + 1 < a.length; k += 2) {
+        fields.set(a[k], a[k + 1]);
+    }
+    return fields;
+}
+
+function lastGraphics() {
+    const g = published.filter(([t]) => t === 'aop/display/layers/graphics');
+    return g.length ? g[g.length - 1][1] : undefined;
+}
+
+function lastOf(topic) {
+    return published.filter(([t]) => t === topic).at(-1);
+}
+
+function graphicsApp(app) {
+    fakeMqtt.emit('message', GRAPHICS_APP, Buffer.from(app ? JSON.stringify(app) : ''));
+}
+
+function stubFile(file, exports) {
+    const m = new Module(file);
+    m.filename = file;
+    m.loaded = true;
+    m.exports = exports;
+    require.cache[file] = m;
+}
+
+async function waitUntil(cond) {
+    for (let i = 0; i < 200 && !cond(); i++) {
+        await new Promise(r => setTimeout(r, 5));
+    }
+    assert.ok(cond(), 'condicao nao atingida');
+}
+
+function addProfile(id, nickname) {
+    store.set(USERS_INDEX, usersIndex().add(id));
+    store.set(`user:${id}`, new Map([['id', id], ['nickname', nickname]]));
+}
+
+function removeProfile(id) {
+    usersIndex().delete(id);
+    store.delete(`user:${id}`);
+}

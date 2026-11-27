@@ -71,12 +71,6 @@ const handlers = new Map([
     [TOPICS.gui_layer, loadInterfaceScreen],
 ]);
 
-const client = mqtt.connect(`mqtt://${process.env.MQTT_HOST}`, {
-    clientId: MQTT_CLIENT_ID,
-    clean: true,
-    connectTimeout: MQTT_CONNECT_TIMEOUT_MS,
-});
-
 function setDisplayGui(screen) {
     client.publish(TOPICS.gui_layer, screen);
     DATA.rxgui.previous = DATA.rxgui.current;
@@ -351,6 +345,32 @@ function loadGraphicsApplication(message) {
     logger.info(`[apps] ${app.appId} in the graphics layer at ${app.url}`);
 }
 
+function onConnect() {
+    logger.info('Connected to MQTT broker');
+    handlers.forEach((_, filter) => {
+        client.subscribe(filter, { noLocal: true });
+    });
+
+    // Topics of the current service: handled here, subscribed by
+    // setCurrentService.
+    handlers.set(TOPICS.sls_metadata, loadSLSMetadata);
+
+    loadUserData();
+}
+
+// A handler may return a promise: its failure goes to the log.
+function onMessage(topic, message) {
+    for (const [filter, handler] of handlers) {
+        if (mqttTopicMatch(topic, filter)) {
+            Promise.resolve(handler(message.toString(), topic)).catch((err) => {
+                logger.error(`[mqtt] handler of ${topic} failed: ${err.message}`);
+            });
+            return;
+        }
+    }
+    logger.info(`no handler for topic ${topic}`);
+}
+
 // The fields of Table C.8 of the current service: serviceName is the appName
 // of the BAM and serviceId the one of the SLT, from the catalog entry; empty
 // for a service outside the catalog.
@@ -391,32 +411,11 @@ function mqttTopicMatch(topic, filter) {
     return new RegExp(`^${levels.join('/')}$`).test(topic);
 }
 
-function onConnect() {
-    logger.info('Connected to MQTT broker');
-    handlers.forEach((_, filter) => {
-        client.subscribe(filter, { noLocal: true });
-    });
-
-    // Topics of the current service: handled here, subscribed by
-    // setCurrentService.
-    handlers.set(TOPICS.sls_metadata, loadSLSMetadata);
-
-    loadUserData();
-}
-
-// A handler may return a promise: its failure goes to the log.
-function onMessage(topic, message) {
-    for (const [filter, handler] of handlers) {
-        if (mqttTopicMatch(topic, filter)) {
-            Promise.resolve(handler(message.toString(), topic)).catch((err) => {
-                logger.error(`[mqtt] handler of ${topic} failed: ${err.message}`);
-            });
-            return;
-        }
-    }
-    logger.info(`no handler for topic ${topic}`);
-}
-
+const client = mqtt.connect(`mqtt://${process.env.MQTT_HOST}`, {
+    clientId: MQTT_CLIENT_ID,
+    clean: true,
+    connectTimeout: MQTT_CONNECT_TIMEOUT_MS,
+});
 catalog.start((topic, message) => client.publish(topic, message, { retain: true }));
 client.on('connect', onConnect);
 client.on('message', onMessage);
