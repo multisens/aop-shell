@@ -44,6 +44,24 @@ function announcedServices(catalog) {
     return fcall('tv30_announced_services', args);
 }
 
+// session:current-user; empty for no current user.
+function sessionUser(id) {
+    return fcall('tv30_session_user', [id]);
+}
+
+// session:current-service with the fields of Table C.8 (serviceContextId,
+// serviceName, serviceId) and session:current-service-id, in a single
+// operation.
+function sessionService(fields) {
+    return fcall('tv30_session_service', fieldPairs(fields));
+}
+
+// No current service: session:current-service deleted and
+// session:current-service-id empty.
+function sessionServiceClear() {
+    return fcall('tv30_session_service', []);
+}
+
 // Refusal of data outside the schema (nothing written): repeating does not
 // change the result.
 function isSchemaRefusal(err) {
@@ -65,5 +83,8 @@ module.exports = {
     profileLastAccess,
     profileRemove,
     announcedServices,
+    sessionUser,
+    sessionService,
+    sessionServiceClear,
     isSchemaRefusal,
 };

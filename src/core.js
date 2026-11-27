@@ -2,6 +2,7 @@ require('dotenv').config();
 const mqtt = require('mqtt');
 const logger = require('./logger');
 const redis = require('./redis-client');
+const redisFunctions = require('./redis-functions');
 const profiles = require('./modules/profile-manager/service');
 const lls = require('./modules/transport-layer-metadata-lls');
 const catalog = require('./modules/application-catalog/catalog');
@@ -116,12 +117,14 @@ function setVideoSize(top = '0', left = '0', width = '100%', height = '100%') {
     client.publish(TOPICS.pmplayer_size, JSON.stringify({ top, left, width, height }));
 }
 
-// Writes lastAccess first: if storage fails, the change does not happen and
-// the error is thrown.
+// Writes lastAccess and session:current-user before aop/currentUser: if
+// storage fails, the change does not happen and the error is thrown.
 async function setCurrentUser(uid) {
-    await profiles.touchLastAccess(uid.toString());
-    DATA.currentUser = uid.toString();
-    client.publish(TOPICS.current_user, uid.toString(), { retain: true });
+    const id = uid.toString();
+    await profiles.touchLastAccess(id);
+    await redisFunctions.sessionUser(id);
+    DATA.currentUser = id;
+    client.publish(TOPICS.current_user, id, { retain: true });
 }
 
 function getCurrentUser() {
@@ -129,14 +132,16 @@ function getCurrentUser() {
 }
 
 // A profile already removed from storage: removing the current one leaves
-// aop/currentUser empty until the choice in the chooser; the removal goes to
-// aop/removedUser, and the platform goes back to the profile chooser.
-function profileRemoved(uid) {
+// session:current-user and aop/currentUser empty until the choice in the
+// chooser; the removal goes to aop/removedUser, and the platform goes back
+// to the profile chooser. A Redis failure rejects.
+async function profileRemoved(uid) {
     const index = DATA.users.findIndex((user) => user.id === uid);
     if (index >= 0) {
         DATA.users.splice(index, 1);
     }
     if (uid === DATA.currentUser) {
+        await redisFunctions.sessionUser('');
         DATA.currentUser = '';
         client.publish(TOPICS.current_user, '', { retain: true });
     }
@@ -152,18 +157,22 @@ function getUserList() {
     return DATA.users;
 }
 
-// sid is the globalServiceId. The SLS topics are the ones of the serviceId
-// of its catalog entry; a service outside the catalog has no SLS. A Redis
-// failure rejects, with the service already published.
+// sid is the globalServiceId. The session (Table C.8) is written before
+// aop/currentService is published, with the serviceName and serviceId of the
+// catalog entry; the SLS topics are the ones of that serviceId. A service
+// outside the catalog has neither, nor SLS. A Redis failure rejects, with
+// nothing published.
 async function setCurrentService(sid) {
     const tunedAt = new Date();
-    DATA.currentService = sid.toString();
+    const serviceContextId = sid.toString();
+    DATA.currentService = serviceContextId;
     DATA.currentEntry = undefined;
-    client.publish(TOPICS.current_service, sid.toString(), { retain: true });
-    const entry = await catalog.service(DATA.currentService);
-    if (DATA.currentService !== sid.toString()) {
+    const entry = await catalog.service(serviceContextId);
+    await redisFunctions.sessionService(sessionFields(serviceContextId, entry));
+    if (DATA.currentService !== serviceContextId) {
         return;
     }
+    client.publish(TOPICS.current_service, serviceContextId, { retain: true });
     DATA.currentEntry = withConfiguration(entry);
     if (!entry) {
         logger.error(`[sls] ${DATA.currentService} is not in the Application Catalog: its SLS is not subscribed`);
@@ -174,7 +183,10 @@ async function setCurrentService(sid) {
     publishTuning(entry, tunedAt);
 }
 
-function unsetCurrentService() {
+// The session is cleared before aop/currentService is emptied; a Redis
+// failure rejects, with nothing changed.
+async function unsetCurrentService() {
+    await redisFunctions.sessionServiceClear();
     if (DATA.currentEntry) {
         client.unsubscribe(slsFilter(DATA.currentEntry.serviceId), { noLocal: true });
     }
@@ -282,7 +294,8 @@ function loadCurrentUser(message) {
     });
 }
 
-// The retained service at boot: its catalog entry is read again.
+// The retained service at boot: its catalog entry is read again, and the
+// session is rewritten from it.
 async function loadCurrentService(message) {
     const sid = message.toString();
     if (sid === DATA.currentService) {
@@ -294,6 +307,7 @@ async function loadCurrentService(message) {
         return;
     }
     const entry = await catalog.service(sid);
+    await redisFunctions.sessionService(sessionFields(sid, entry));
     if (DATA.currentService === sid) {
         DATA.currentEntry = withConfiguration(entry);
     }
@@ -335,6 +349,16 @@ function loadGraphicsApplication(message) {
     setVideoSize();
     client.publish(TOPICS.graphics_layer, app.url);
     logger.info(`[apps] ${app.appId} in the graphics layer at ${app.url}`);
+}
+
+// The fields of Table C.8 of the current service: serviceName is the appName
+// of the BAM and serviceId the one of the SLT, from the catalog entry; empty
+// for a service outside the catalog.
+function sessionFields(serviceContextId, entry) {
+    if (!entry) {
+        return { serviceContextId, serviceName: '', serviceId: '' };
+    }
+    return { serviceContextId, serviceName: entry.bam.appName || '', serviceId: String(entry.serviceId) };
 }
 
 // The catalog entry with the configuration of its SLT Service element, or

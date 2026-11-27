@@ -45,7 +45,7 @@ router.post('/remove', async (req, res) => {
         }
         throw err;
     }
-    core.profileRemoved(id);
+    await core.profileRemoved(id);
     res.status(200).json({ id });
 });
 

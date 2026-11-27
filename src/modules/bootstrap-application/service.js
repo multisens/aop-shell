@@ -133,11 +133,12 @@ function esgData() {
     }
 }
 
-function closeBootstrapApp(gui) {
+// A Redis failure rejects (unsetCurrentService).
+async function closeBootstrapApp(gui) {
     core.setDisplayGui(gui);
     core.setVideoURL();
     core.setVideoSize();
-    core.unsetCurrentService();
+    await core.unsetCurrentService();
 }
 
 // BpAFR-09: the information of the Bootstrap Application is hidden and the

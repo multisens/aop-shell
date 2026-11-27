@@ -15,5 +15,5 @@ test('aop-shell: escrita nas familias do alcance do Redis so pelo adaptador das 
     const cfg = tv30Modules(path.join(__dirname, '..', '..'))['aop-shell'];
     const r = checkJsModule({ ...cfg, root: path.join(__dirname, '..') });
     assert.deepEqual(r.violations, [], r.violations.join('\n'));
-    assert.deepEqual(r.adapterFunctions, ['tv30_announced_services', 'tv30_profile_last_access', 'tv30_profile_remove', 'tv30_profile_write']);
+    assert.deepEqual(r.adapterFunctions, ['tv30_announced_services', 'tv30_profile_last_access', 'tv30_profile_remove', 'tv30_profile_write', 'tv30_session_service', 'tv30_session_user']);
 });

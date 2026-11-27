@@ -30,13 +30,13 @@ router.get('/', async (req, res) => {
     res.send(html);
 });
 
-router.get('/profile', (req, res) => {
-    service.closeBootstrapApp(core.GUI.profile_chooser);
+router.get('/profile', async (req, res) => {
+    await service.closeBootstrapApp(core.GUI.profile_chooser);
     res.status(200).send();
 });
 
-router.get('/appcat', (req, res) => {
-    service.closeBootstrapApp(core.GUI.app_catalogue);
+router.get('/appcat', async (req, res) => {
+    await service.closeBootstrapApp(core.GUI.app_catalogue);
     res.status(200).send();
 });
 

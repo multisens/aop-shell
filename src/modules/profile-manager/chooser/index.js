@@ -10,7 +10,7 @@ const router = express.Router();
 router.get('/', async (req, res) => {
     // The chooser runs WITHOUT an active service: clears the retained
     // aop/currentService. A Redis failure gives 404 {error:200}.
-    core.unsetCurrentService();
+    await core.unsetCurrentService();
     await core.refreshUserData();
 
     const html = await ejs.renderFile(path.join(__dirname, 'view.ejs'),

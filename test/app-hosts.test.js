@@ -59,6 +59,17 @@ for (const [name, fn] of Object.entries({
                 store.set('services:announced', catalogo);
                 return catalogo.size;
             }
+            // The session, written before the topic is published.
+            case 'tv30_session_user':
+                store.set('session:current-user', a[0]);
+                return 1;
+            case 'tv30_session_service': {
+                const campos = new Map();
+                for (let i = 0; i + 1 < a.length; i += 2) campos.set(a[i], a[i + 1]);
+                store.set('session:current-service', campos);
+                store.set('session:current-service-id', campos.get('serviceContextId') || '');
+                return 1;
+            }
             default: throw new Error('ERR Function not found');
         }
     },
@@ -175,13 +186,14 @@ test('remocao do perfil corrente: aop/currentUser vazio (retido), aop/removedUse
     // told.
     tiraDoDuble(atual);
     let n0 = published.length;
-    core.profileRemoved(atual);
+    await core.profileRemoved(atual);
     assert.deepEqual(published.slice(n0), [
         ['aop/currentUser', '', true],
         ['aop/removedUser', atual, false],
         ['aop/display/layers/rxgui', '/prfchs', false],
     ]);
     assert.equal(core.getCurrentUser(), '');
+    assert.equal(store.get('session:current-user'), '');
     assert.deepEqual(core.getUserList().map(u => u.id).sort(), [B, C].sort());
 
     // The chooser reloads the profiles without choosing one by itself.
@@ -196,7 +208,7 @@ test('remocao do perfil corrente: aop/currentUser vazio (retido), aop/removedUse
     // A profile that is not the current one: aop/currentUser stays.
     tiraDoDuble(C);
     n0 = published.length;
-    core.profileRemoved(C);
+    await core.profileRemoved(C);
     assert.deepEqual(published.slice(n0), [['aop/removedUser', C, false], ['aop/display/layers/rxgui', '/prfchs', false]]);
     assert.equal(core.getCurrentUser(), B);
     assert.deepEqual(core.getUserList().map(u => u.id), [B]);
@@ -246,9 +258,9 @@ test('Esc sem aplicacao: so as informacoes da Bootstrap; a Bootstrap em tela che
     assert.ok(!published.slice(n0).some(([t]) => t === END_REQUEST));
 });
 
-test('fim de aplicacao sem servico sintonizado: a camada esvazia e a Bootstrap nao volta', () => {
+test('fim de aplicacao sem servico sintonizado: a camada esvazia e a Bootstrap nao volta', async () => {
     graphicsApp(APP);
-    core.unsetCurrentService();
+    await core.unsetCurrentService();
     const n0 = published.length;
     graphicsApp(null);
     assert.deepEqual(published.slice(n0), [['aop/display/layers/graphics', '', false]]);
@@ -277,6 +289,9 @@ test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava service
     assert.deepEqual([...store.get('services:announced').keys()], [SID]);
     assert.equal(JSON.parse(store.get('services:announced').get(SID)).bsid, 10);
     await core.setCurrentService(SID);
+    // The session of Table C.8, from the catalog entry.
+    assert.deepEqual(Object.fromEntries(store.get('session:current-service')), { serviceContextId: SID, serviceName: 'Users', serviceId: String(SERVICE_ID) });
+    assert.deepEqual(published.filter(([t]) => t === 'aop/currentService').at(-1), ['aop/currentService', SID, true]);
     assert.equal(core.getCurrentService().bam.appName, 'Users');
     assert.equal(core.getCurrentService().serviceId, SERVICE_ID);
     assert.deepEqual(subscribed.slice(-1), [`tlm/sls/${SERVICE_ID}/#`]);
@@ -292,7 +307,9 @@ test('catalogo no core: SLT e BAMT vao a LLS; o marco de varredura grava service
     fakeMqtt.emit('message', 'tlm/scan', marco([10]));
     await ate(() => servicos().at(-1)[1] === '[]');
     assert.equal(store.get('services:announced').size, 0);
-    core.unsetCurrentService();
+    await core.unsetCurrentService();
+    assert.equal(store.get('session:current-service-id'), '');
+    assert.deepEqual(writes.at(-1), ['FCALL', 'tv30_session_service']);
     assert.deepEqual(unsubscribed.slice(-1), [`tlm/sls/${SERVICE_ID}/#`]);
     assert.deepEqual(published.filter(([t]) => t === 'tlm/tuned').at(-1), ['tlm/tuned', '', true]);
     fakeMqtt.emit('message', 'tlm/lls/10/slt', Buffer.from(''));
